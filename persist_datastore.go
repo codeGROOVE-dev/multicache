@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,7 +13,7 @@ import (
 )
 
 const (
-	datastoreKind     = "CacheEntry"
+	datastoreKind      = "CacheEntry"
 	maxDatastoreKeyLen = 1500 // Datastore has stricter key length limits
 )
 
@@ -30,7 +31,7 @@ func (d *datastorePersist[K, V]) ValidateKey(key K) error {
 		return fmt.Errorf("key too long: %d bytes (max %d for datastore)", len(keyStr), maxDatastoreKeyLen)
 	}
 	if len(keyStr) == 0 {
-		return fmt.Errorf("key cannot be empty")
+		return errors.New("key cannot be empty")
 	}
 	return nil
 }
@@ -39,9 +40,9 @@ func (d *datastorePersist[K, V]) ValidateKey(key K) error {
 // We use base64-encoded string for Value to avoid datastore []byte limitations.
 // The key is stored in the Datastore entity key itself.
 type datastoreEntry struct {
-	Value     string    `datastore:"value,noindex"` // base64-encoded JSON value
 	Expiry    time.Time `datastore:"expiry,omitempty,noindex"`
 	UpdatedAt time.Time `datastore:"updated_at"`
+	Value     string    `datastore:"value,noindex"`
 }
 
 // newDatastorePersist creates a new Datastore-based persistence layer.
@@ -75,7 +76,7 @@ func (d *datastorePersist[K, V]) Load(ctx context.Context, key K) (V, time.Time,
 
 	var entry datastoreEntry
 	if err := d.client.Get(ctx, dsKey, &entry); err != nil {
-		if err == datastore.ErrNoSuchEntity {
+		if errors.Is(err, datastore.ErrNoSuchEntity) {
 			return zero, time.Time{}, false, nil
 		}
 		return zero, time.Time{}, false, fmt.Errorf("datastore get: %w", err)
@@ -166,7 +167,7 @@ func (d *datastorePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-c
 		for {
 			var entry datastoreEntry
 			dsKey, err := iter.Next(&entry)
-			if err == datastore.Done {
+			if errors.Is(err, datastore.Done) {
 				break
 			}
 			if err != nil {

@@ -10,30 +10,26 @@ import (
 // S3-FIFO uses three queues: Small (10%), Main (90%), and Ghost (for frequency tracking).
 // Items start in Small, get promoted to Main if accessed again, and Ghost tracks evicted keys.
 type s3fifo[K comparable, V any] struct {
-	mu sync.RWMutex
-
-	capacity int
-	smallCap int // 10% of capacity
-	mainCap  int // 90% of capacity
-	ghostCap int // Same as capacity for frequency tracking
-
-	items map[K]*entry[K, V] // Fast lookup
-
-	small *list.List // Small queue (FIFO)
-	main  *list.List // Main queue (FIFO)
-	ghost *list.List // Ghost queue (tracks recently evicted keys)
-
-	ghostKeys map[K]*list.Element // Fast ghost lookup
+	items     map[K]*entry[K, V]
+	small     *list.List
+	main      *list.List
+	ghost     *list.List
+	ghostKeys map[K]*list.Element
+	capacity  int
+	smallCap  int
+	mainCap   int
+	ghostCap  int
+	mu        sync.RWMutex
 }
 
 // entry represents a cached item with metadata.
 type entry[K comparable, V any] struct {
+	expiry  time.Time
 	key     K
 	value   V
-	expiry  time.Time
-	freq    int  // Frequency counter
-	inSmall bool // True if in small queue, false if in main
 	element *list.Element
+	freq    int
+	inSmall bool
 }
 
 // newS3FIFO creates a new S3-FIFO cache with the given capacity.

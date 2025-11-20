@@ -7,11 +7,11 @@ import (
 
 // Options configures a Cache instance.
 type Options struct {
-	MemorySize   int           // Maximum number of items in memory cache (default: 10000)
-	DefaultTTL   time.Duration // Default TTL for items with no explicit TTL (default: 0 = no expiration)
-	CacheID      string        // Identifier for cache (used for local dir name and datastore database ID)
-	UseDatastore bool          // If true, use Cloud Datastore instead of local files
-	WarmupLimit  int           // Max number of entries to load during warmup (0 = disabled, default: 0)
+	CacheID      string
+	MemorySize   int
+	DefaultTTL   time.Duration
+	WarmupLimit  int
+	UseDatastore bool
 }
 
 // Option is a functional option for configuring a Cache.
@@ -51,7 +51,7 @@ func WithCloudDatastore(cacheID string) Option {
 
 // WithBestStore automatically selects the best persistence option:
 // - If K_SERVICE environment variable is set (Google Cloud Run/Knative): uses Cloud Datastore
-// - Otherwise: uses local file store
+// - Otherwise: uses local file store.
 func WithBestStore(cacheID string) Option {
 	return func(o *Options) {
 		o.CacheID = cacheID

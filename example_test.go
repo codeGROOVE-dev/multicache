@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tstromberg/bdcache"
+	"github.com/codeGROOVE-dev/bdcache"
 )
 
 func ExampleCache_basic() {

@@ -29,7 +29,7 @@ func (f *filePersist[K, V]) ValidateKey(key K) error {
 	// Allow alphanumeric, dash, underscore, period, colon
 	for _, ch := range keyStr {
 		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-		     (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == ':') {
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == ':') {
 			return fmt.Errorf("invalid character %q in key (only alphanumeric, dash, underscore, period, colon allowed)", ch)
 		}
 	}
@@ -218,7 +218,6 @@ func (f *filePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan E
 			entries = append(entries, e)
 			return nil
 		})
-
 		if err != nil {
 			errCh <- fmt.Errorf("walk dir: %w", err)
 			return

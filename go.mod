@@ -1,4 +1,4 @@
-module github.com/tstromberg/bdcache
+module github.com/codeGROOVE-dev/bdcache
 
 go 1.25.4
 

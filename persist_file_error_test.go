@@ -23,10 +23,10 @@ func TestFilePersist_CorruptedFile(t *testing.T) {
 	// Create a corrupted file
 	filename := filepath.Join(dir, fp.keyToFilename("badkey"))
 	// Create subdirectory first (for squid-style layout)
-	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filename, []byte("corrupted data"), 0644); err != nil {
+	if err := os.WriteFile(filename, []byte("corrupted data"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -55,8 +55,8 @@ func TestFilePersist_StoreTempFileError(t *testing.T) {
 	defer fp.Close()
 
 	// Make directory read-only to trigger write error
-	oldMode := os.FileMode(0755)
-	if err := os.Chmod(dir, 0444); err != nil {
+	oldMode := os.FileMode(0o755)
+	if err := os.Chmod(dir, 0o444); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
 	defer os.Chmod(dir, oldMode)
@@ -90,11 +90,11 @@ func TestFilePersist_LoadAllWithCorruptedFiles(t *testing.T) {
 
 	// Create corrupted file
 	corruptFile := filepath.Join(dir, "corrupt.gob")
-	os.WriteFile(corruptFile, []byte("bad data"), 0644)
+	os.WriteFile(corruptFile, []byte("bad data"), 0o644)
 
 	// Create non-gob file (should be skipped)
 	txtFile := filepath.Join(dir, "readme.txt")
-	os.WriteFile(txtFile, []byte("ignore me"), 0644)
+	os.WriteFile(txtFile, []byte("ignore me"), 0o644)
 
 	// LoadAll should skip corrupted and non-gob files
 	entryCh, errCh := fp.LoadAll(ctx)
@@ -187,5 +187,41 @@ func TestFilePersist_ExpiredCleanupDuringLoad(t *testing.T) {
 	// File should be removed
 	if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
 		t.Error("expired file should be deleted after Load")
+	}
+}
+
+func TestFilePersist_LoadCorruptedGob(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := newFilePersist[string, int](filepath.Base(dir))
+	if err != nil {
+		t.Fatalf("newFilePersist: %v", err)
+	}
+	defer fp.Close()
+	fp.dir = dir
+
+	ctx := context.Background()
+
+	// Create a file with invalid gob data
+	filename := filepath.Join(dir, fp.keyToFilename("corrupt"))
+	// Create subdirectory first (for squid-style layout)
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filename, []byte("not valid gob"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Load should handle gracefully and remove bad file
+	_, _, found, err := fp.Load(ctx, "corrupt")
+	if err != nil {
+		t.Fatalf("Load should not error on corrupt file: %v", err)
+	}
+	if found {
+		t.Error("corrupt file should not be found")
+	}
+
+	// File should be removed
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Error("corrupt file should be removed")
 	}
 }

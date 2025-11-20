@@ -241,7 +241,7 @@ func TestDatastorePersist_Mock_LoadAllContextCancellation(t *testing.T) {
 	baseCtx := context.Background()
 
 	// Store many entries
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		if err := dp.Store(baseCtx, string(rune(i)), i, time.Time{}); err != nil {
 			t.Fatalf("Store: %v", err)
 		}
@@ -260,7 +260,7 @@ func TestDatastorePersist_Mock_LoadAllContextCancellation(t *testing.T) {
 
 	// Should get context cancellation error (may be wrapped)
 	err := <-errCh
-	if err == nil || (err != context.Canceled && !errors.Is(err, context.Canceled)) {
+	if err == nil || (!errors.Is(err, context.Canceled) && !errors.Is(err, context.Canceled)) {
 		t.Errorf("expected context.Canceled error; got %v", err)
 	}
 }
@@ -351,5 +351,134 @@ func TestCache_WithDatastoreMock(t *testing.T) {
 	// Should now be in memory again
 	if _, memFound := cache.memory.get("key1"); !memFound {
 		t.Error("key1 should be promoted to memory after persistence load")
+	}
+}
+
+func TestDatastorePersist_Mock_ComplexTypes(t *testing.T) {
+	type ComplexStruct struct {
+		Name  string
+		Items []string
+		Meta  map[string]int
+	}
+
+	dp, cleanup := newMockDatastorePersist[string, ComplexStruct](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	data := ComplexStruct{
+		Name:  "test",
+		Items: []string{"a", "b", "c"},
+		Meta:  map[string]int{"count": 3},
+	}
+
+	// Store complex type
+	if err := dp.Store(ctx, "complex", data, time.Time{}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// Load and verify
+	loaded, _, found, err := dp.Load(ctx, "complex")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found {
+		t.Fatal("complex not found")
+	}
+
+	if loaded.Name != data.Name {
+		t.Errorf("Name = %s; want %s", loaded.Name, data.Name)
+	}
+	if len(loaded.Items) != 3 {
+		t.Errorf("Items length = %d; want 3", len(loaded.Items))
+	}
+	if loaded.Meta["count"] != 3 {
+		t.Errorf("Meta[count] = %d; want 3", loaded.Meta["count"])
+	}
+}
+
+func TestDatastorePersist_Mock_DeleteNonExistent(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Delete non-existent key should not error
+	if err := dp.Delete(ctx, "nonexistent"); err != nil {
+		t.Errorf("Delete nonexistent: %v", err)
+	}
+}
+
+func TestDatastorePersist_Mock_ExpiredInLoadAll(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store entries with different expirations
+	dp.Store(ctx, "valid1", 1, time.Now().Add(1*time.Hour))
+	dp.Store(ctx, "valid2", 2, time.Now().Add(1*time.Hour))
+	dp.Store(ctx, "expired", 99, time.Now().Add(-1*time.Second))
+
+	// LoadAll should handle expired entries
+	entryCh, errCh := dp.LoadAll(ctx)
+
+	for range entryCh {
+		// Entries channel should be empty (LoadAll doesn't return entries by design)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("LoadAll error: %v", err)
+		}
+	default:
+	}
+
+	// Verify valid entries still accessible
+	val, _, found, _ := dp.Load(ctx, "valid1")
+	if !found || val != 1 {
+		t.Errorf("valid1 = %v, %v; want 1, true", val, found)
+	}
+}
+
+func TestDatastorePersist_Mock_StoreWithExpiry(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, string](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	expiry := time.Now().Add(2 * time.Hour)
+	if err := dp.Store(ctx, "key1", "value1", expiry); err != nil {
+		t.Fatalf("Store with expiry: %v", err)
+	}
+
+	val, loadedExpiry, found, err := dp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != "value1" {
+		t.Errorf("value = %s; want value1", val)
+	}
+
+	// Verify expiry was stored
+	if loadedExpiry.Sub(expiry).Abs() > time.Second {
+		t.Errorf("expiry = %v; want ~%v", loadedExpiry, expiry)
+	}
+}
+
+func TestDatastorePersist_Mock_UnsupportedType(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, func()](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Try to store a function (which can't be JSON marshaled)
+	err := dp.Store(ctx, "key1", func() {}, time.Time{})
+	if err == nil {
+		t.Error("Store should fail when marshaling unsupported type")
 	}
 }

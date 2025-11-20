@@ -240,7 +240,7 @@ func TestFilePersist_ContextCancellation(t *testing.T) {
 
 	// Store many entries with valid alphanumeric keys
 	ctx := context.Background()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := fmt.Sprintf("key%d", i)
 		if err := fp.Store(ctx, key, i, time.Time{}); err != nil {
 			t.Fatalf("Store: %v", err)
@@ -263,5 +263,40 @@ func TestFilePersist_ContextCancellation(t *testing.T) {
 	err = <-errCh
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled error; got %v", err)
+	}
+}
+
+func TestFilePersist_Store_CompleteFlow(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := newFilePersist[string, string](filepath.Base(dir))
+	if err != nil {
+		t.Fatalf("newFilePersist: %v", err)
+	}
+	defer fp.Close()
+	fp.dir = dir
+
+	ctx := context.Background()
+
+	// Test complete store flow with expiry
+	expiry := time.Now().Add(1 * time.Hour)
+	if err := fp.Store(ctx, "key1", "value1", expiry); err != nil {
+		t.Fatalf("Store with expiry: %v", err)
+	}
+
+	// Load and verify expiry is set
+	val, loadedExpiry, found, err := fp.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != "value1" {
+		t.Errorf("value = %s; want value1", val)
+	}
+
+	// Verify expiry was stored correctly (within 1 second)
+	if loadedExpiry.Sub(expiry).Abs() > time.Second {
+		t.Errorf("expiry = %v; want ~%v", loadedExpiry, expiry)
 	}
 }

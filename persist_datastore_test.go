@@ -208,3 +208,14 @@ func TestDatastorePersist_ComplexValue(t *testing.T) {
 	// Cleanup
 	dp.Delete(ctx, "user1")
 }
+
+func TestNewDatastorePersist_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	// Try to create with invalid project (will fail but tests the path)
+	_, err := newDatastorePersist[string, int](ctx, "test-invalid-project")
+	// Error is expected - we're testing the code path
+	if err == nil {
+		t.Log("newDatastorePersist succeeded unexpectedly - might have credentials")
+	}
+}

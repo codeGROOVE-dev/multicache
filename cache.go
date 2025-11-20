@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 // Cache is a generic cache with memory and optional persistence layers.
 type Cache[K comparable, V any] struct {
 	memory  *s3fifo[K, V]

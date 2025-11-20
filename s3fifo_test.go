@@ -38,7 +38,7 @@ func TestS3FIFO_Capacity(t *testing.T) {
 	cache := newS3FIFO[int, string](capacity)
 
 	// Fill cache to capacity
-	for i := 0; i < capacity; i++ {
+	for i := range capacity {
 		cache.set(i, "value", time.Time{})
 	}
 
@@ -168,22 +168,22 @@ func TestS3FIFO_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent writers
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(offset int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				cache.set(offset*100+j, j, time.Time{})
 			}
 		}(i)
 	}
 
 	// Concurrent readers
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				cache.get(j)
 			}
 		}()
@@ -261,19 +261,19 @@ func BenchmarkS3FIFO_Set(b *testing.B) {
 	cache := newS3FIFO[int, int](10000)
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		cache.set(i%10000, i, time.Time{})
 	}
 }
 
 func BenchmarkS3FIFO_Get(b *testing.B) {
 	cache := newS3FIFO[int, int](10000)
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		cache.set(i, i, time.Time{})
 	}
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		cache.get(i % 10000)
 	}
 }
@@ -282,7 +282,7 @@ func BenchmarkS3FIFO_Mixed(b *testing.B) {
 	cache := newS3FIFO[int, int](10000)
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if i%2 == 0 {
 			cache.set(i%10000, i, time.Time{})
 		} else {
