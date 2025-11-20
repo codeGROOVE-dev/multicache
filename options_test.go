@@ -1,7 +1,6 @@
 package bdcache
 
 import (
-	"os"
 	"testing"
 )
 
@@ -20,8 +19,7 @@ func TestOptions_WithCloudDatastore(t *testing.T) {
 // TestOptions_WithBestStore tests WithBestStore with K_SERVICE.
 func TestOptions_WithBestStore_WithKService(t *testing.T) {
 	// Set K_SERVICE environment variable
-	os.Setenv("K_SERVICE", "test-service")
-	defer os.Unsetenv("K_SERVICE")
+	t.Setenv("K_SERVICE", "test-service")
 
 	opts := defaultOptions()
 	WithBestStore("test-cache")(opts)
@@ -33,8 +31,8 @@ func TestOptions_WithBestStore_WithKService(t *testing.T) {
 
 // TestOptions_WithBestStore_WithoutKService tests WithBestStore without K_SERVICE.
 func TestOptions_WithBestStore_WithoutKService(t *testing.T) {
-	// Ensure K_SERVICE is not set
-	os.Unsetenv("K_SERVICE")
+	// Ensure K_SERVICE is not set (t.Setenv with empty value unsets on cleanup)
+	t.Setenv("K_SERVICE", "")
 
 	opts := defaultOptions()
 	WithBestStore("test-cache")(opts)

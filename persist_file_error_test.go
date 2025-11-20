@@ -15,7 +15,11 @@ func TestFilePersist_CorruptedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -52,14 +56,22 @@ func TestFilePersist_StoreTempFileError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Make directory read-only to trigger write error
 	oldMode := os.FileMode(0o755)
 	if err := os.Chmod(dir, 0o444); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
-	defer os.Chmod(dir, oldMode)
+	defer func() {
+		if err := os.Chmod(dir, oldMode); err != nil {
+			t.Logf("Chmod error: %v", err)
+		}
+	}()
 
 	fp.dir = dir
 
@@ -79,22 +91,34 @@ func TestFilePersist_LoadAllWithCorruptedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
 
 	// Store good entries
-	fp.Store(ctx, "good1", 1, time.Time{})
-	fp.Store(ctx, "good2", 2, time.Time{})
+	if err := fp.Store(ctx, "good1", 1, time.Time{}); err != nil {
+		t.Fatalf("Store good1: %v", err)
+	}
+	if err := fp.Store(ctx, "good2", 2, time.Time{}); err != nil {
+		t.Fatalf("Store good2: %v", err)
+	}
 
 	// Create corrupted file
 	corruptFile := filepath.Join(dir, "corrupt.gob")
-	os.WriteFile(corruptFile, []byte("bad data"), 0o644)
+	if err := os.WriteFile(corruptFile, []byte("bad data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	// Create non-gob file (should be skipped)
 	txtFile := filepath.Join(dir, "readme.txt")
-	os.WriteFile(txtFile, []byte("ignore me"), 0o644)
+	if err := os.WriteFile(txtFile, []byte("ignore me"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	// LoadAll should skip corrupted and non-gob files
 	entryCh, errCh := fp.LoadAll(ctx)
@@ -139,7 +163,11 @@ func TestFilePersist_DeleteNonExistentKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -157,7 +185,11 @@ func TestFilePersist_ExpiredCleanupDuringLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -196,7 +228,11 @@ func TestFilePersist_LoadCorruptedGob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()

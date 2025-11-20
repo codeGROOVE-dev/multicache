@@ -25,12 +25,12 @@ type datastorePersist[K comparable, V any] struct {
 
 // ValidateKey checks if a key is valid for Datastore persistence.
 // Datastore has stricter key length limits than files.
-func (d *datastorePersist[K, V]) ValidateKey(key K) error {
+func (*datastorePersist[K, V]) ValidateKey(key K) error {
 	keyStr := fmt.Sprintf("%v", key)
 	if len(keyStr) > maxDatastoreKeyLen {
 		return fmt.Errorf("key too long: %d bytes (max %d for datastore)", len(keyStr), maxDatastoreKeyLen)
 	}
-	if len(keyStr) == 0 {
+	if keyStr == "" {
 		return errors.New("key cannot be empty")
 	}
 	return nil
@@ -85,11 +85,15 @@ func (d *datastorePersist[K, V]) Load(ctx context.Context, key K) (V, time.Time,
 	// Check expiration
 	if !entry.Expiry.IsZero() && time.Now().After(entry.Expiry) {
 		// Delete expired entry asynchronously with timeout
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Note: Using context.Background() intentionally - cleanup should continue even if parent context is cancelled
+		go func(_ context.Context) {
+			//nolint:contextcheck // Using Background intentionally for independent cleanup goroutine
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			d.client.Delete(ctx, dsKey)
-		}()
+			if err := d.client.Delete(cleanupCtx, dsKey); err != nil {
+				slog.Debug("failed to delete expired entry", "error", err)
+			}
+		}(ctx)
 		return zero, time.Time{}, false, nil
 	}
 
@@ -185,11 +189,15 @@ func (d *datastorePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-c
 
 			// Clean up expired entries asynchronously with timeout
 			if !entry.Expiry.IsZero() && now.After(entry.Expiry) {
-				go func(key *datastore.Key) {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// Note: Using context.Background() intentionally - cleanup should continue even if parent context is cancelled
+				go func(_ context.Context, key *datastore.Key) {
+					//nolint:contextcheck // Using Background intentionally for independent cleanup goroutine
+					cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
-					d.client.Delete(ctx, key)
-				}(dsKey)
+					if err := d.client.Delete(cleanupCtx, key); err != nil {
+						slog.Debug("failed to delete expired entry", "error", err)
+					}
+				}(ctx, dsKey)
 				expired++
 				continue
 			}
@@ -201,12 +209,12 @@ func (d *datastorePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-c
 			keyStr := dsKey.Name
 			if _, err := fmt.Sscanf(keyStr, "%v", &key); err != nil {
 				// If Sscanf fails, try direct type assertion for string keys
-				if strKey, ok := any(keyStr).(K); ok {
-					key = strKey
-				} else {
+				strKey, ok := any(keyStr).(K)
+				if !ok {
 					slog.Warn("failed to parse key from datastore", "key", keyStr, "error", err)
 					continue
 				}
+				key = strKey
 			}
 
 			// Decode value from base64

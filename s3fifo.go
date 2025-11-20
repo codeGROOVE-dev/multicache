@@ -160,21 +160,24 @@ func (c *s3fifo[K, V]) evict() {
 func (c *s3fifo[K, V]) evictFromSmall() {
 	for c.small.Len() > 0 {
 		elem := c.small.Front()
-		ent := elem.Value.(*entry[K, V])
+		ent, ok := elem.Value.(*entry[K, V])
+		if !ok {
+			c.small.Remove(elem)
+			continue
+		}
 
 		c.small.Remove(elem)
 
 		// If accessed (freq > 0), promote to main queue
-		if ent.freq > 0 {
-			ent.freq = 0
-			ent.inSmall = false
-			ent.element = c.main.PushBack(ent)
-		} else {
+		if ent.freq == 0 {
 			// Evict and add to ghost queue
 			delete(c.items, ent.key)
 			c.addToGhost(ent.key)
 			return
 		}
+		ent.freq = 0
+		ent.inSmall = false
+		ent.element = c.main.PushBack(ent)
 	}
 }
 
@@ -182,20 +185,23 @@ func (c *s3fifo[K, V]) evictFromSmall() {
 func (c *s3fifo[K, V]) evictFromMain() {
 	for c.main.Len() > 0 {
 		elem := c.main.Front()
-		ent := elem.Value.(*entry[K, V])
+		ent, ok := elem.Value.(*entry[K, V])
+		if !ok {
+			c.main.Remove(elem)
+			continue
+		}
 
 		c.main.Remove(elem)
 
 		// If accessed (freq > 0), move to back of main queue
-		if ent.freq > 0 {
-			ent.freq--
-			ent.element = c.main.PushBack(ent)
-		} else {
+		if ent.freq == 0 {
 			// Evict and add to ghost queue
 			delete(c.items, ent.key)
 			c.addToGhost(ent.key)
 			return
 		}
+		ent.freq--
+		ent.element = c.main.PushBack(ent)
 	}
 }
 
@@ -204,9 +210,13 @@ func (c *s3fifo[K, V]) addToGhost(key K) {
 	// Evict from ghost if at capacity
 	if c.ghost.Len() >= c.ghostCap {
 		elem := c.ghost.Front()
-		ghostKey := elem.Value.(K)
-		c.ghost.Remove(elem)
-		delete(c.ghostKeys, ghostKey)
+		ghostKey, ok := elem.Value.(K)
+		if ok {
+			c.ghost.Remove(elem)
+			delete(c.ghostKeys, ghostKey)
+		} else {
+			c.ghost.Remove(elem)
+		}
 	}
 
 	// Add to ghost queue

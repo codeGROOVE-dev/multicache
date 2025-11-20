@@ -31,14 +31,20 @@ func TestCache_OnDemandLoadFromDisk(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Create second cache WITHOUT warmup - memory should be empty
 	cache2, err := NewWithOptions[string, string](ctx, WithLocalStore(cacheID))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Verify memory is empty (no warmup)
 	if cache2.memory.len() != 0 {
@@ -114,14 +120,20 @@ func TestCache_DiskToMemoryPromotion(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Create second cache instance WITH warmup
 	cache2, err := NewWithOptions[string, string](ctx, WithLocalStore(cacheID), WithWarmup(10))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Give warmup goroutine time to complete
 	time.Sleep(100 * time.Millisecond)
@@ -149,15 +161,16 @@ func TestCache_PersistenceFailureGracefulDegradation(t *testing.T) {
 	ctx := context.Background()
 
 	// Create cache with invalid directory to trigger persistence failure
-	cache, err := newCacheWithPersistence[string, int](ctx, &Options{
+	cache := newCacheWithPersistence[string, int](ctx, &Options{
 		MemorySize:   100,
 		CacheID:      "/invalid/path/that/cannot/be/created/\x00null",
 		UseDatastore: false,
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Persistence should have failed, but cache should still work
 	if cache.persist != nil {
@@ -179,7 +192,7 @@ func TestCache_PersistenceFailureGracefulDegradation(t *testing.T) {
 }
 
 // newCacheWithPersistence is a helper that allows testing persistence initialization failures.
-func newCacheWithPersistence[K comparable, V any](ctx context.Context, opts *Options) (*Cache[K, V], error) {
+func newCacheWithPersistence[K comparable, V any](ctx context.Context, opts *Options) *Cache[K, V] {
 	cache := &Cache[K, V]{
 		memory: newS3FIFO[K, V](opts.MemorySize),
 		opts:   opts,
@@ -204,7 +217,7 @@ func newCacheWithPersistence[K comparable, V any](ctx context.Context, opts *Opt
 		}
 	}
 
-	return cache, nil
+	return cache
 }
 
 // TestCache_GetMissWithPersistence tests Get miss path with persistence.
@@ -216,7 +229,11 @@ func TestCache_GetMissWithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Get non-existent key - should check persistence
 	_, found, err := cache.Get(ctx, "nonexistent")
@@ -237,7 +254,11 @@ func TestCache_DeleteWithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set and delete
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -247,7 +268,10 @@ func TestCache_DeleteWithPersistence(t *testing.T) {
 	cache.Delete(ctx, "key1")
 
 	// Verify deleted from memory
-	_, found, _ := cache.Get(ctx, "key1")
+	_, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get after delete: %v", err)
+	}
 	if found {
 		t.Error("key1 should be deleted from memory")
 	}
@@ -257,11 +281,18 @@ func TestCache_DeleteWithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	time.Sleep(100 * time.Millisecond)
 
-	_, found, _ = cache2.Get(ctx, "key1")
+	_, found, err = cache2.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get from cache2: %v", err)
+	}
 	if found {
 		t.Error("key1 should not be loaded from persistence after delete")
 	}
@@ -299,7 +330,11 @@ func TestNew_HelperFunction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	if cache.opts.MemorySize != 10000 {
 		t.Errorf("default memory size = %d; want 10000", cache.opts.MemorySize)
@@ -319,7 +354,11 @@ func TestCache_CleanupWithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Add expired and valid entries
 	if err := cache.Set(ctx, "expired1", 1, 10*time.Millisecond); err != nil {
@@ -341,7 +380,10 @@ func TestCache_CleanupWithPersistence(t *testing.T) {
 	}
 
 	// Valid entry should remain
-	_, found, _ := cache.Get(ctx, "valid")
+	_, found, err := cache.Get(ctx, "valid")
+	if err != nil {
+		t.Fatalf("Get valid: %v", err)
+	}
 	if !found {
 		t.Error("valid entry should still exist")
 	}
@@ -374,14 +416,20 @@ func TestCache_ComprehensiveDiskToMemoryPath(t *testing.T) {
 		t.Errorf("cache1 length = %d; want 3", cache1.Len())
 	}
 
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Step 2: Create new cache with warmup - should load from disk
 	cache2, err := New[string, string](ctx, WithLocalStore(cacheID), WithMemorySize(5), WithWarmup(10))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Wait for warmup
 	time.Sleep(150 * time.Millisecond)
@@ -410,7 +458,11 @@ func TestCache_ComprehensiveDiskToMemoryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New cache3: %v", err)
 	}
-	defer cache3.Close()
+	defer func() {
+		if err := cache3.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Immediately Get (before warmup completes) - should load from disk
 	v, found, err := cache3.Get(ctx, "key1")
@@ -447,7 +499,11 @@ func TestCache_MemoryCapacityWithDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Fill beyond memory capacity
 	for i := 1; i <= 10; i++ {
@@ -497,17 +553,26 @@ func TestCache_New_CompletePersistenceFlow(t *testing.T) {
 	if err := cache1.Set(ctx, "key1", 42, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Test loading from persistence on-demand (no warmup)
 	cache2, err := New[string, int](ctx, WithLocalStore(cacheID))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Should load from disk on-demand
-	val, found, _ := cache2.Get(ctx, "key1")
+	val, found, err := cache2.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get after reload: %v", err)
+	}
 	if !found || val != 42 {
 		t.Errorf("Get after reload = %v, %v; want 42, true (should load on-demand from disk)", val, found)
 	}
@@ -526,17 +591,38 @@ func TestCache_New_WarmupError(t *testing.T) {
 	if err := cache1.Set(ctx, "key1", 42, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Corrupt one of the cache files
-	fp, _ := newFilePersist[string, int](cacheID)
-	defer fp.Close()
+	fp, err := newFilePersist[string, int](cacheID)
+	if err != nil {
+		t.Fatalf("newFilePersist: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
-	entries, _ := os.ReadDir(fp.dir)
-	if len(entries) > 0 {
-		// Corrupt the first file
-		corruptFile := filepath.Join(fp.dir, entries[0].Name())
-		os.WriteFile(corruptFile, []byte("corrupted"), 0o644)
+	// Find and corrupt a .gob file (not a directory)
+	var corruptFile string
+	if err := filepath.Walk(fp.dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Ext(path) == ".gob" && corruptFile == "" {
+			corruptFile = path
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if corruptFile != "" {
+		if err := os.WriteFile(corruptFile, []byte("corrupted"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
 	}
 
 	// Create new cache - warmup should handle error gracefully
@@ -544,13 +630,20 @@ func TestCache_New_WarmupError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Cache should still work
 	if err := cache2.Set(ctx, "key2", 100, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	val, found, _ := cache2.Get(ctx, "key2")
+	val, found, err := cache2.Get(ctx, "key2")
+	if err != nil {
+		t.Fatalf("Get key2: %v", err)
+	}
 	if !found || val != 100 {
 		t.Errorf("Get key2 = %v, %v; want 100, true", val, found)
 	}
@@ -563,7 +656,11 @@ func TestCache_SetWithDefaultTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set with ttl=0 should use default TTL
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -571,7 +668,10 @@ func TestCache_SetWithDefaultTTL(t *testing.T) {
 	}
 
 	// Should exist immediately
-	_, found, _ := cache.Get(ctx, "key1")
+	_, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get immediately: %v", err)
+	}
 	if !found {
 		t.Error("key1 should exist immediately")
 	}
@@ -580,7 +680,10 @@ func TestCache_SetWithDefaultTTL(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Should be expired
-	_, found, _ = cache.Get(ctx, "key1")
+	_, found, err = cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get after expire: %v", err)
+	}
 	if found {
 		t.Error("key1 should be expired after default TTL")
 	}
@@ -603,24 +706,37 @@ func TestCache_Warmup_WithErrors(t *testing.T) {
 			t.Fatalf("Set: %v", err)
 		}
 	}
-	cache1.Close()
+	if err := cache1.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Corrupt some cache files to trigger warmup errors
-	fp, _ := newFilePersist[string, int](cacheID)
-	defer fp.Close()
+	fp, err := newFilePersist[string, int](cacheID)
+	if err != nil {
+		t.Fatalf("newFilePersist: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Walk directory tree to find .gob files (accounting for squid-style subdirs)
 	var gobFiles []string
-	filepath.Walk(fp.dir, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(fp.dir, func(path string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() && filepath.Ext(path) == ".gob" {
 			gobFiles = append(gobFiles, path)
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
 
 	if len(gobFiles) > 0 {
 		// Corrupt first file
-		os.WriteFile(gobFiles[0], []byte("bad data"), 0o644)
+		if err := os.WriteFile(gobFiles[0], []byte("bad data"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
 	}
 
 	// Create new cache with warmup - should handle errors gracefully
@@ -628,7 +744,11 @@ func TestCache_Warmup_WithErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	time.Sleep(150 * time.Millisecond) // Wait for warmup
 

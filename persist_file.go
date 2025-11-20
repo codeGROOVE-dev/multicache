@@ -3,11 +3,13 @@ package bdcache
 import (
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -20,7 +22,7 @@ type filePersist[K comparable, V any] struct {
 
 // ValidateKey checks if a key is valid for file persistence.
 // Keys must be alphanumeric, dash, underscore, period, or colon, and max 127 characters.
-func (f *filePersist[K, V]) ValidateKey(key K) error {
+func (*filePersist[K, V]) ValidateKey(key K) error {
 	keyStr := fmt.Sprintf("%v", key)
 	if len(keyStr) > maxKeyLength {
 		return fmt.Errorf("key too long: %d bytes (max %d)", len(keyStr), maxKeyLength)
@@ -28,8 +30,8 @@ func (f *filePersist[K, V]) ValidateKey(key K) error {
 
 	// Allow alphanumeric, dash, underscore, period, colon
 	for _, ch := range keyStr {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == ':') {
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') &&
+			(ch < '0' || ch > '9') && ch != '-' && ch != '_' && ch != '.' && ch != ':' {
 			return fmt.Errorf("invalid character %q in key (only alphanumeric, dash, underscore, period, colon allowed)", ch)
 		}
 	}
@@ -39,6 +41,19 @@ func (f *filePersist[K, V]) ValidateKey(key K) error {
 
 // newFilePersist creates a new file-based persistence layer.
 func newFilePersist[K comparable, V any](cacheID string) (*filePersist[K, V], error) {
+	// Validate cacheID to prevent path traversal attacks
+	if cacheID == "" {
+		return nil, errors.New("cacheID cannot be empty")
+	}
+	// Check for path traversal attempts
+	if strings.Contains(cacheID, "..") || strings.Contains(cacheID, "/") || strings.Contains(cacheID, "\\") {
+		return nil, fmt.Errorf("invalid cacheID: contains path separators or traversal sequences")
+	}
+	// Check for null bytes (security)
+	if strings.Contains(cacheID, "\x00") {
+		return nil, errors.New("invalid cacheID: contains null byte")
+	}
+
 	// Get OS-appropriate cache directory
 	baseDir, err := os.UserCacheDir()
 	if err != nil {
@@ -48,7 +63,7 @@ func newFilePersist[K comparable, V any](cacheID string) (*filePersist[K, V], er
 	dir := filepath.Join(baseDir, cacheID)
 
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 
@@ -59,7 +74,7 @@ func newFilePersist[K comparable, V any](cacheID string) (*filePersist[K, V], er
 
 // keyToFilename converts a cache key to a filename with squid-style directory layout.
 // Uses first 2 characters of key as subdirectory (e.g., "ab/abcd123.gob").
-func (f *filePersist[K, V]) keyToFilename(key K) string {
+func (*filePersist[K, V]) keyToFilename(key K) string {
 	keyStr := fmt.Sprintf("%v", key)
 
 	// Squid-style: use first 2 chars as subdirectory
@@ -84,19 +99,27 @@ func (f *filePersist[K, V]) Load(ctx context.Context, key K) (V, time.Time, bool
 		}
 		return zero, time.Time{}, false, fmt.Errorf("open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			slog.Debug("failed to close file", "file", filename, "error", err)
+		}
+	}()
 
 	var entry Entry[K, V]
 	dec := gob.NewDecoder(file)
 	if err := dec.Decode(&entry); err != nil {
 		// File corrupted, remove it
-		os.Remove(filename)
+		if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove corrupted file", "file", filename, "error", err)
+		}
 		return zero, time.Time{}, false, nil
 	}
 
 	// Check expiration
 	if !entry.Expiry.IsZero() && time.Now().After(entry.Expiry) {
-		os.Remove(filename)
+		if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove expired file", "file", filename, "error", err)
+		}
 		return zero, time.Time{}, false, nil
 	}
 
@@ -108,7 +131,7 @@ func (f *filePersist[K, V]) Store(ctx context.Context, key K, value V, expiry ti
 	filename := filepath.Join(f.dir, f.keyToFilename(key))
 
 	// Create subdirectory if it doesn't exist (for squid-style layout)
-	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filename), 0o750); err != nil {
 		return fmt.Errorf("create subdirectory: %w", err)
 	}
 
@@ -131,18 +154,24 @@ func (f *filePersist[K, V]) Store(ctx context.Context, key K, value V, expiry ti
 	closeErr := file.Close()
 
 	if encErr != nil {
-		os.Remove(tempFile)
+		if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove temp file after encode error", "file", tempFile, "error", err)
+		}
 		return fmt.Errorf("encode entry: %w", encErr)
 	}
 
 	if closeErr != nil {
-		os.Remove(tempFile)
+		if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove temp file after close error", "file", tempFile, "error", err)
+		}
 		return fmt.Errorf("close temp file: %w", closeErr)
 	}
 
 	// Atomic rename
 	if err := os.Rename(tempFile, filename); err != nil {
-		os.Remove(tempFile)
+		if err := os.Remove(tempFile); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove temp file after rename error", "file", tempFile, "error", err)
+		}
 		return fmt.Errorf("rename file: %w", err)
 	}
 
@@ -202,15 +231,23 @@ func (f *filePersist[K, V]) LoadRecent(ctx context.Context, limit int) (<-chan E
 			dec := gob.NewDecoder(file)
 			if err := dec.Decode(&e); err != nil {
 				slog.Warn("failed to decode cache file", "file", path, "error", err)
-				file.Close()
-				os.Remove(path)
+				if err := file.Close(); err != nil {
+					slog.Debug("failed to close file after decode error", "file", path, "error", err)
+				}
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					slog.Debug("failed to remove corrupted file", "file", path, "error", err)
+				}
 				return nil
 			}
-			file.Close()
+			if err := file.Close(); err != nil {
+				slog.Debug("failed to close file", "file", path, "error", err)
+			}
 
 			// Skip expired entries and clean up
 			if !e.Expiry.IsZero() && now.After(e.Expiry) {
-				os.Remove(path)
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					slog.Debug("failed to remove expired file", "file", path, "error", err)
+				}
 				expired++
 				return nil
 			}
@@ -250,7 +287,7 @@ func (f *filePersist[K, V]) LoadAll(ctx context.Context) (<-chan Entry[K, V], <-
 }
 
 // Close cleans up resources.
-func (f *filePersist[K, V]) Close() error {
+func (*filePersist[K, V]) Close() error {
 	// No resources to clean up for file-based persistence
 	return nil
 }

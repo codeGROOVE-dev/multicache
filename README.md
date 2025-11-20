@@ -4,15 +4,16 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/codeGROOVE-dev/bdcache)](https://goreportcard.com/report/github.com/codeGROOVE-dev/bdcache)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Simple, fast, reliable Go cache with [S3-FIFO eviction](https://s3fifo.com/) - better hit rates than LRU.
+Simple, fast, secure Go cache with [S3-FIFO eviction](https://s3fifo.com/) - better hit rates than LRU.
 
 ## Why?
 
 - **S3-FIFO Algorithm** - [Superior cache hit rates](https://s3fifo.com/) compared to LRU/LFU
-- **Fast** - ~19ns per operation, zero allocations
+- **Fast** - ~20ns per operation, zero allocations
+- **Secure** - Hardened input validation, no path traversal
 - **Reliable** - Memory cache always works, even if persistence fails
-- **Smart Persistence** - Local files for dev. Cloud Datastore for Cloud Run
-- **Minimal Dependencies** - Only one optional dependency (Cloud Datastore)
+- **Smart Persistence** - Local files for dev, Cloud Datastore for Cloud Run
+- **Minimal Dependencies** - Only one (Cloud Datastore)
 
 ## Install
 
@@ -48,8 +49,8 @@ cache, err := bdcache.New[string, User](ctx, bdcache.WithBestStore("myapp"))
 ## Performance
 
 ```
-BenchmarkCache_Get_Hit-16      66M ops/sec    18.5 ns/op    0 allocs
-BenchmarkCache_Set-16          61M ops/sec    19.3 ns/op    0 allocs
+BenchmarkCache_Get_Hit-16      63M ops/sec    19.9 ns/op    0 allocs
+BenchmarkCache_Set-16          57M ops/sec    20.8 ns/op    0 allocs
 ```
 
 ## License

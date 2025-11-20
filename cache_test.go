@@ -14,7 +14,11 @@ func TestCache_MemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Test Set and Get
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -59,7 +63,11 @@ func TestCache_WithTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set with short TTL
 	if err := cache.Set(ctx, "temp", "value", 50*time.Millisecond); err != nil {
@@ -67,7 +75,10 @@ func TestCache_WithTTL(t *testing.T) {
 	}
 
 	// Should be available immediately
-	val, found, _ := cache.Get(ctx, "temp")
+	val, found, err := cache.Get(ctx, "temp")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != "value" {
 		t.Error("temp should be found immediately")
 	}
@@ -76,7 +87,10 @@ func TestCache_WithTTL(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Should be expired
-	_, found, _ = cache.Get(ctx, "temp")
+	_, found, err = cache.Get(ctx, "temp")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if found {
 		t.Error("temp should be expired")
 	}
@@ -88,7 +102,11 @@ func TestCache_DefaultTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set without explicit TTL (ttl=0 uses default)
 	if err := cache.Set(ctx, "key", 100, 0); err != nil {
@@ -96,7 +114,10 @@ func TestCache_DefaultTTL(t *testing.T) {
 	}
 
 	// Should be available immediately
-	_, found, _ := cache.Get(ctx, "key")
+	_, found, err := cache.Get(ctx, "key")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Error("key should be found immediately")
 	}
@@ -105,7 +126,10 @@ func TestCache_DefaultTTL(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Should be expired
-	_, found, _ = cache.Get(ctx, "key")
+	_, found, err = cache.Get(ctx, "key")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if found {
 		t.Error("key should be expired after default TTL")
 	}
@@ -117,7 +141,11 @@ func TestCache_Cleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Add expired and valid entries
 	if err := cache.Set(ctx, "expired1", 1, 1*time.Millisecond); err != nil {
@@ -140,7 +168,10 @@ func TestCache_Cleanup(t *testing.T) {
 	}
 
 	// Valid entry should still exist
-	_, found, _ := cache.Get(ctx, "valid")
+	_, found, err := cache.Get(ctx, "valid")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Error("valid entry should still exist")
 	}
@@ -152,7 +183,11 @@ func TestCache_Concurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	var wg sync.WaitGroup
 
@@ -175,7 +210,7 @@ func TestCache_Concurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := range 100 {
-				cache.Get(ctx, j)
+				_, _, _ = cache.Get(ctx, j) //nolint:errcheck // Intentionally ignoring errors in concurrent stress test
 			}
 		}()
 	}
@@ -205,14 +240,20 @@ func TestCache_WithFilePersistence(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	cache.Close()
+	if err := cache.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Create new cache instance - should load from files
 	cache2, err := New[string, string](ctx, WithLocalStore(cacheID))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Give warmup time to complete
 	time.Sleep(100 * time.Millisecond)
@@ -233,7 +274,11 @@ func TestCache_Len(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	if cache.Len() != 0 {
 		t.Errorf("initial length = %d; want 0", cache.Len())
@@ -262,8 +307,15 @@ func TestCache_Len(t *testing.T) {
 
 func BenchmarkCache_Set(b *testing.B) {
 	ctx := context.Background()
-	cache, _ := New[int, int](ctx)
-	defer cache.Close()
+	cache, err := New[int, int](ctx)
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -275,8 +327,15 @@ func BenchmarkCache_Set(b *testing.B) {
 
 func BenchmarkCache_Get_Hit(b *testing.B) {
 	ctx := context.Background()
-	cache, _ := New[int, int](ctx)
-	defer cache.Close()
+	cache, err := New[int, int](ctx)
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Populate cache
 	for i := range 10000 {
@@ -287,25 +346,39 @@ func BenchmarkCache_Get_Hit(b *testing.B) {
 
 	b.ResetTimer()
 	for i := range b.N {
-		cache.Get(ctx, i%10000)
+		_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Benchmarking performance, errors not critical
 	}
 }
 
 func BenchmarkCache_Get_Miss(b *testing.B) {
 	ctx := context.Background()
-	cache, _ := New[int, int](ctx)
-	defer cache.Close()
+	cache, err := New[int, int](ctx)
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
 
 	b.ResetTimer()
 	for i := range b.N {
-		cache.Get(ctx, i)
+		_, _, _ = cache.Get(ctx, i) //nolint:errcheck // Benchmarking performance, errors not critical
 	}
 }
 
 func BenchmarkCache_Mixed(b *testing.B) {
 	ctx := context.Background()
-	cache, _ := New[int, int](ctx)
-	defer cache.Close()
+	cache, err := New[int, int](ctx)
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -314,7 +387,7 @@ func BenchmarkCache_Mixed(b *testing.B) {
 				b.Fatalf("Set: %v", err)
 			}
 		} else {
-			cache.Get(ctx, i%10000)
+			_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Benchmarking performance, errors not critical
 		}
 	}
 }
@@ -354,7 +427,11 @@ func TestCache_Delete_PersistenceError(t *testing.T) {
 		persist: &errorPersist[string, int]{},
 		opts:    &Options{MemorySize: 100},
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set directly in memory (bypass persistence which would fail)
 	cache.memory.set("key1", 42, time.Time{})
@@ -363,7 +440,10 @@ func TestCache_Delete_PersistenceError(t *testing.T) {
 	cache.Delete(ctx, "key1")
 
 	// Should be deleted from memory
-	_, found, _ := cache.Get(ctx, "key1")
+	_, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if found {
 		t.Error("key1 should be deleted from memory")
 	}
@@ -378,7 +458,11 @@ func TestCache_Get_PersistenceError(t *testing.T) {
 		persist: &errorPersist[string, int]{},
 		opts:    &Options{MemorySize: 100},
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Get should handle persistence error gracefully
 	_, found, err := cache.Get(ctx, "key1")
@@ -401,13 +485,20 @@ func TestCache_New_DatastorePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Should work in memory even if datastore failed
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Errorf("Get = %v, %v; want 42, true", val, found)
 	}
@@ -420,7 +511,11 @@ func TestCache_New_DefaultOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	if cache.opts.MemorySize != 10000 {
 		t.Errorf("default memory size = %d; want 10000", cache.opts.MemorySize)
@@ -443,7 +538,11 @@ func TestCache_New_FilePersistenceSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	if cache.persist == nil {
 		t.Error("persist should not be nil with valid local store")
@@ -453,17 +552,26 @@ func TestCache_New_FilePersistenceSuccess(t *testing.T) {
 	if err := cache.Set(ctx, "warmup-test", 42, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	cache.Close()
+	if err := cache.Close(); err != nil {
+		t.Logf("Close error: %v", err)
+	}
 
 	// Create new cache - should load on-demand from disk (no warmup)
 	cache2, err := New[string, int](ctx, WithLocalStore(cacheID))
 	if err != nil {
 		t.Fatalf("New cache2: %v", err)
 	}
-	defer cache2.Close()
+	defer func() {
+		if err := cache2.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Should load on-demand from disk
-	val, found, _ := cache2.Get(ctx, "warmup-test")
+	val, found, err := cache2.Get(ctx, "warmup-test")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Errorf("Get on-demand = %v, %v; want 42, true", val, found)
 	}
@@ -477,7 +585,11 @@ func TestCache_New_WithDatastoreOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Should work in memory-only mode after persistence fails
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -500,7 +612,11 @@ func TestCache_SetDefaultWithExplicitTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set with ttl=0 should use the default TTL
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -508,7 +624,10 @@ func TestCache_SetDefaultWithExplicitTTL(t *testing.T) {
 	}
 
 	// Verify it's set
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Errorf("Get = %v, %v; want 42, true", val, found)
 	}
@@ -521,7 +640,11 @@ func TestCache_SetExplicitTTLOverridesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set with explicit short TTL (overrides default)
 	if err := cache.Set(ctx, "key1", 42, 50*time.Millisecond); err != nil {
@@ -529,7 +652,10 @@ func TestCache_SetExplicitTTLOverridesDefault(t *testing.T) {
 	}
 
 	// Should exist immediately
-	_, found, _ := cache.Get(ctx, "key1")
+	_, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found {
 		t.Error("key1 should exist immediately")
 	}
@@ -538,7 +664,10 @@ func TestCache_SetExplicitTTLOverridesDefault(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Should be expired
-	_, found, _ = cache.Get(ctx, "key1")
+	_, found, err = cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if found {
 		t.Error("key1 should be expired after explicit TTL")
 	}
@@ -552,7 +681,11 @@ func TestCache_Set_WithPersistenceStoreError(t *testing.T) {
 		persist: &errorPersist[string, int]{},
 		opts:    &Options{MemorySize: 100, DefaultTTL: 0},
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Set should return error when persistence fails
 	err := cache.Set(ctx, "key1", 42, 0)
@@ -564,7 +697,10 @@ func TestCache_Set_WithPersistenceStoreError(t *testing.T) {
 	}
 
 	// BUT value should still be in memory (reliability guarantee)
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Errorf("Get = %v, %v; want 42, true (value should be cached despite persistence failure)", val, found)
 	}
@@ -613,4 +749,52 @@ func (e *errorPersist[K, V]) Store(ctx context.Context, key K, value V, expiry t
 
 func (e *errorPersist[K, V]) ValidateKey(key K) error {
 	return nil // Allow all keys for test
+}
+
+func BenchmarkCache_Set_WithPersistence(b *testing.B) {
+	ctx := context.Background()
+	cacheID := "bench-persist-" + time.Now().Format("20060102150405")
+	cache, err := New[int, int](ctx, WithLocalStore(cacheID))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
+
+	b.ResetTimer()
+	for i := range b.N {
+		if err := cache.Set(ctx, i%10000, i, 0); err != nil {
+			b.Fatalf("Set: %v", err)
+		}
+	}
+}
+
+func BenchmarkCache_Get_WithPersistence(b *testing.B) {
+	ctx := context.Background()
+	cacheID := "bench-persist-get-" + time.Now().Format("20060102150405")
+	cache, err := New[int, int](ctx, WithLocalStore(cacheID))
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := cache.Close(); err != nil {
+			b.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Populate cache
+	for i := range 1000 {
+		if err := cache.Set(ctx, i, i, 0); err != nil {
+			b.Fatalf("Set: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := range b.N {
+		// Most hits from memory, occasional disk miss
+		_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Benchmark code
+	}
 }

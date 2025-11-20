@@ -1,3 +1,4 @@
+// Package bdcache provides a high-performance cache with S3-FIFO eviction and optional persistence.
 package bdcache
 
 import (
@@ -84,7 +85,7 @@ func (c *Cache[K, V]) warmup(ctx context.Context) {
 
 // Get retrieves a value from the cache.
 // It first checks the memory cache, then falls back to persistence if available.
-func (c *Cache[K, V]) Get(ctx context.Context, key K) (V, bool, error) {
+func (c *Cache[K, V]) Get(ctx context.Context, key K) (value V, found bool, err error) {
 	// Check memory first
 	if val, ok := c.memory.get(key); ok {
 		return val, true, nil
@@ -92,6 +93,13 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K) (V, bool, error) {
 
 	// If no persistence, return miss
 	if c.persist == nil {
+		var zero V
+		return zero, false, nil
+	}
+
+	// Validate key before accessing persistence (security: prevent path traversal)
+	if err := c.persist.ValidateKey(key); err != nil {
+		slog.Warn("invalid key for persistence", "error", err, "key", key)
 		var zero V
 		return zero, false, nil
 	}
@@ -156,6 +164,11 @@ func (c *Cache[K, V]) Delete(ctx context.Context, key K) {
 
 	// Remove from persistence if available
 	if c.persist != nil {
+		// Validate key before accessing persistence (security: prevent path traversal)
+		if err := c.persist.ValidateKey(key); err != nil {
+			slog.Warn("invalid key for persistence delete", "error", err, "key", key)
+			return
+		}
 		if err := c.persist.Delete(ctx, key); err != nil {
 			// Log error but don't fail - graceful degradation
 			slog.Warn("persistence delete failed", "error", err, "key", key)

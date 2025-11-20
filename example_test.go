@@ -16,7 +16,7 @@ func ExampleCache_basic() {
 	if err != nil {
 		panic(err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Example code, error handling would clutter the example
 
 	// Store a value
 	if err := cache.Set(ctx, "answer", 42, 0); err != nil {
@@ -24,7 +24,10 @@ func ExampleCache_basic() {
 	}
 
 	// Retrieve it
-	val, found, _ := cache.Get(ctx, "answer")
+	val, found, err := cache.Get(ctx, "answer")
+	if err != nil {
+		panic(err)
+	}
 	if found {
 		fmt.Printf("The answer is %d\n", val)
 	}
@@ -42,7 +45,7 @@ func ExampleCache_withTTL() {
 	if err != nil {
 		panic(err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Example code, error handling would clutter the example
 
 	// Set with default TTL (ttl=0 uses configured DefaultTTL)
 	if err := cache.Set(ctx, "session", "user-123", 0); err != nil {
@@ -55,7 +58,10 @@ func ExampleCache_withTTL() {
 	}
 
 	// Retrieve values
-	session, found, _ := cache.Get(ctx, "session")
+	session, found, err := cache.Get(ctx, "session")
+	if err != nil {
+		panic(err)
+	}
 	if found {
 		fmt.Printf("Session: %s\n", session)
 	}
@@ -74,7 +80,7 @@ func ExampleCache_withLocalStore() {
 	if err != nil {
 		panic(err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Example code, error handling would clutter the example
 
 	// Values are cached in memory and persisted to disk
 	if err := cache.Set(ctx, "config", "production", 0); err != nil {
@@ -82,7 +88,10 @@ func ExampleCache_withLocalStore() {
 	}
 
 	// After restart, values are loaded from disk automatically
-	val, found, _ := cache.Get(ctx, "config")
+	val, found, err := cache.Get(ctx, "config")
+	if err != nil {
+		panic(err)
+	}
 	if found {
 		fmt.Printf("Config: %s\n", val)
 	}
@@ -102,13 +111,16 @@ func ExampleCache_withBestStore() {
 	if err != nil {
 		panic(err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Example code, error handling would clutter the example
 
 	if err := cache.Set(ctx, "counter", 100, 0); err != nil {
 		panic(err)
 	}
 
-	val, found, _ := cache.Get(ctx, "counter")
+	val, found, err := cache.Get(ctx, "counter")
+	if err != nil {
+		panic(err)
+	}
 	if found {
 		fmt.Printf("Counter: %d\n", val)
 	}
@@ -130,7 +142,7 @@ func ExampleCache_structValues() {
 	if err != nil {
 		panic(err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Example code, error handling would clutter the example
 
 	// Store a struct
 	user := User{
@@ -143,7 +155,10 @@ func ExampleCache_structValues() {
 	}
 
 	// Retrieve it
-	retrieved, found, _ := cache.Get(ctx, 1)
+	retrieved, found, err := cache.Get(ctx, 1)
+	if err != nil {
+		panic(err)
+	}
 	if found {
 		fmt.Printf("User: %s (%s)\n", retrieved.Name, retrieved.Email)
 	}

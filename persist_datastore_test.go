@@ -11,6 +11,7 @@ import (
 // They will be skipped if the environment is not configured.
 
 func skipIfNoDatastore(t *testing.T) {
+	t.Helper()
 	if os.Getenv("DATASTORE_EMULATOR_HOST") == "" && os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
 		t.Skip("Skipping datastore tests: no emulator or credentials configured")
 	}
@@ -24,7 +25,11 @@ func TestDatastorePersist_StoreLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store a value
 	if err := dp.Store(ctx, "key1", 42, time.Time{}); err != nil {
@@ -47,7 +52,9 @@ func TestDatastorePersist_StoreLoad(t *testing.T) {
 	}
 
 	// Cleanup
-	dp.Delete(ctx, "key1")
+	if err := dp.Delete(ctx, "key1"); err != nil {
+		t.Logf("Delete error: %v", err)
+	}
 }
 
 func TestDatastorePersist_LoadMissing(t *testing.T) {
@@ -58,7 +65,11 @@ func TestDatastorePersist_LoadMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Load non-existent key
 	_, _, found, err := dp.Load(ctx, "missing-key-12345")
@@ -78,7 +89,11 @@ func TestDatastorePersist_TTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store with past expiry
 	past := time.Now().Add(-1 * time.Second)
@@ -104,7 +119,11 @@ func TestDatastorePersist_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store and delete
 	if err := dp.Store(ctx, "key1", 42, time.Time{}); err != nil {
@@ -138,7 +157,11 @@ func TestDatastorePersist_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store initial value
 	if err := dp.Store(ctx, "key", "value1", time.Time{}); err != nil {
@@ -163,7 +186,9 @@ func TestDatastorePersist_Update(t *testing.T) {
 	}
 
 	// Cleanup
-	dp.Delete(ctx, "key")
+	if err := dp.Delete(ctx, "key"); err != nil {
+		t.Logf("Delete error: %v", err)
+	}
 }
 
 func TestDatastorePersist_ComplexValue(t *testing.T) {
@@ -180,7 +205,11 @@ func TestDatastorePersist_ComplexValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDatastorePersist: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	user := User{
 		Name:  "Alice",
@@ -206,7 +235,9 @@ func TestDatastorePersist_ComplexValue(t *testing.T) {
 	}
 
 	// Cleanup
-	dp.Delete(ctx, "user1")
+	if err := dp.Delete(ctx, "user1"); err != nil {
+		t.Logf("Delete error: %v", err)
+	}
 }
 
 func TestNewDatastorePersist_Integration(t *testing.T) {

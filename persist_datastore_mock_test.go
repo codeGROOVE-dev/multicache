@@ -10,7 +10,8 @@ import (
 )
 
 // newMockDatastorePersist creates a datastore persistence layer with mock client.
-func newMockDatastorePersist[K comparable, V any](t *testing.T) (*datastorePersist[K, V], func()) {
+func newMockDatastorePersist[K comparable, V any](t *testing.T) (dp *datastorePersist[K, V], cleanup func()) {
+	t.Helper()
 	client, cleanup := datastore.NewMockClient(t)
 
 	return &datastorePersist[K, V]{
@@ -96,6 +97,7 @@ func TestDatastorePersist_Mock_Delete(t *testing.T) {
 	}
 
 	if err := dp.Delete(ctx, "key1"); err != nil {
+		t.Fatalf("Delete: %v", err)
 	}
 
 	// Should not be loadable
@@ -110,6 +112,13 @@ func TestDatastorePersist_Mock_Delete(t *testing.T) {
 	// Deleting non-existent key should not error
 	if err := dp.Delete(ctx, "missing"); err != nil {
 		t.Errorf("Delete missing key: %v", err)
+	}
+
+	// Verify deletion was successful
+	if _, _, found, err := dp.Load(ctx, "key1"); err != nil {
+		t.Fatalf("Load after deletion: %v", err)
+	} else if found {
+		t.Error("key1 should not be found after deletion")
 	}
 }
 
@@ -260,7 +269,7 @@ func TestDatastorePersist_Mock_LoadAllContextCancellation(t *testing.T) {
 
 	// Should get context cancellation error (may be wrapped)
 	err := <-errCh
-	if err == nil || (!errors.Is(err, context.Canceled) && !errors.Is(err, context.Canceled)) {
+	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled error; got %v", err)
 	}
 }
@@ -321,7 +330,11 @@ func TestCache_WithDatastoreMock(t *testing.T) {
 		persist: dp,
 		opts:    &Options{MemorySize: 100, DefaultTTL: 0},
 	}
-	defer cache.Close()
+	defer func() {
+		if err := cache.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Test operations
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -416,9 +429,15 @@ func TestDatastorePersist_Mock_ExpiredInLoadAll(t *testing.T) {
 	ctx := context.Background()
 
 	// Store entries with different expirations
-	dp.Store(ctx, "valid1", 1, time.Now().Add(1*time.Hour))
-	dp.Store(ctx, "valid2", 2, time.Now().Add(1*time.Hour))
-	dp.Store(ctx, "expired", 99, time.Now().Add(-1*time.Second))
+	if err := dp.Store(ctx, "valid1", 1, time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Store valid1: %v", err)
+	}
+	if err := dp.Store(ctx, "valid2", 2, time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Store valid2: %v", err)
+	}
+	if err := dp.Store(ctx, "expired", 99, time.Now().Add(-1*time.Second)); err != nil {
+		t.Fatalf("Store expired: %v", err)
+	}
 
 	// LoadAll should handle expired entries
 	entryCh, errCh := dp.LoadAll(ctx)
@@ -436,7 +455,10 @@ func TestDatastorePersist_Mock_ExpiredInLoadAll(t *testing.T) {
 	}
 
 	// Verify valid entries still accessible
-	val, _, found, _ := dp.Load(ctx, "valid1")
+	val, _, found, err := dp.Load(ctx, "valid1")
+	if err != nil {
+		t.Fatalf("Load valid1: %v", err)
+	}
 	if !found || val != 1 {
 		t.Errorf("valid1 = %v, %v; want 1, true", val, found)
 	}

@@ -16,7 +16,11 @@ func TestFilePersist_StoreLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Override directory to use temp dir
 	fp.dir = dir
@@ -50,7 +54,11 @@ func TestFilePersist_LoadMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -71,7 +79,11 @@ func TestFilePersist_TTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -104,7 +116,11 @@ func TestFilePersist_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -139,7 +155,11 @@ func TestFilePersist_LoadAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -201,7 +221,11 @@ func TestFilePersist_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
@@ -235,7 +259,11 @@ func TestFilePersist_ContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	// Store many entries with valid alphanumeric keys
@@ -272,7 +300,11 @@ func TestFilePersist_Store_CompleteFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFilePersist: %v", err)
 	}
-	defer fp.Close()
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 	fp.dir = dir
 
 	ctx := context.Background()
