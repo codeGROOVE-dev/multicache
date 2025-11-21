@@ -50,7 +50,11 @@ func TestValkey_ValidateKey(t *testing.T) {
 	if err != nil {
 		t.Skip("Valkey not available")
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	tests := []struct {
 		name    string
@@ -81,7 +85,11 @@ func TestValkey_Location(t *testing.T) {
 	if err != nil {
 		t.Skip("Valkey not available")
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	loc := p.Location("mykey")
 	expected := "testapp:mykey"
@@ -98,7 +106,11 @@ func TestValkey_Cleanup(t *testing.T) {
 	if err != nil {
 		t.Skip("Valkey not available")
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Cleanup always returns 0 since Valkey handles TTL automatically
 	count, err := p.Cleanup(ctx, time.Hour)
@@ -500,9 +512,9 @@ func TestValkeyPersist_ConcurrentAccess(t *testing.T) {
 	errCh := make(chan error, numGoroutines*numOpsPerGoroutine)
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
-			for j := 0; j < numOpsPerGoroutine; j++ {
+			for j := range numOpsPerGoroutine {
 				key := fmt.Sprintf("key-%d-%d", id, j)
 				value := id*1000 + j
 				if err := p.Store(ctx, key, value, time.Time{}); err != nil {
@@ -524,9 +536,9 @@ func TestValkeyPersist_ConcurrentAccess(t *testing.T) {
 
 	// Concurrent reads
 	readErrCh := make(chan error, numGoroutines*numOpsPerGoroutine)
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
-			for j := 0; j < numOpsPerGoroutine; j++ {
+			for j := range numOpsPerGoroutine {
 				key := fmt.Sprintf("key-%d-%d", id, j)
 				expectedValue := id*1000 + j
 				val, _, found, err := p.Load(ctx, key)
@@ -556,8 +568,8 @@ func TestValkeyPersist_ConcurrentAccess(t *testing.T) {
 	}
 
 	// Cleanup
-	for i := 0; i < numGoroutines; i++ {
-		for j := 0; j < numOpsPerGoroutine; j++ {
+	for i := range numGoroutines {
+		for j := range numOpsPerGoroutine {
 			key := fmt.Sprintf("key-%d-%d", i, j)
 			if err := p.Delete(ctx, key); err != nil {
 				t.Logf("cleanup delete error: %v", err)
@@ -700,7 +712,7 @@ func TestValkeyPersist_ContextCancellation(t *testing.T) {
 	}()
 
 	// Store some data first
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := fmt.Sprintf("cancel-key-%d", i)
 		if err := p.Store(ctx, key, i, time.Time{}); err != nil {
 			t.Fatalf("Store: %v", err)
@@ -732,7 +744,7 @@ func TestValkeyPersist_ContextCancellation(t *testing.T) {
 
 	// Cleanup with new context
 	cleanupCtx := context.Background()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		key := fmt.Sprintf("cancel-key-%d", i)
 		if err := p.Delete(cleanupCtx, key); err != nil {
 			t.Logf("cleanup delete error: %v", err)
@@ -848,7 +860,7 @@ func TestValkeyPersist_LoadRecentWithLimit(t *testing.T) {
 	}()
 
 	// Store 10 entries
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := fmt.Sprintf("limit-key-%d", i)
 		if err := p.Store(ctx, key, i, time.Time{}); err != nil {
 			t.Fatalf("Store %s: %v", key, err)
@@ -881,7 +893,7 @@ func TestValkeyPersist_LoadRecentWithLimit(t *testing.T) {
 	}
 
 	// Cleanup
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := fmt.Sprintf("limit-key-%d", i)
 		if err := p.Delete(ctx, key); err != nil {
 			t.Logf("Delete error: %v", err)

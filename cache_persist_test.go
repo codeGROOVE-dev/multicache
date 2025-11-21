@@ -18,8 +18,8 @@ type mockPersister[K comparable, V any] struct {
 }
 
 type mockEntry[V any] struct {
-	value  V
-	expiry time.Time
+	value     V
+	expiry    time.Time
 	updatedAt time.Time
 }
 
@@ -33,7 +33,7 @@ func (m *mockPersister[K, V]) ValidateKey(key K) error {
 	return nil
 }
 
-func (m *mockPersister[K, V]) Load(ctx context.Context, key K) (V, time.Time, bool, error) {
+func (m *mockPersister[K, V]) Load(ctx context.Context, key K) (v V, expiry time.Time, found bool, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -166,7 +166,7 @@ func TestCache_WithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Set should persist
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
@@ -202,13 +202,13 @@ func TestCache_GetFromPersistence(t *testing.T) {
 	persister := newMockPersister[string, int]()
 
 	// Pre-populate persistence
-	persister.Store(ctx, "key1", 42, time.Time{})
+	_ = persister.Store(ctx, "key1", 42, time.Time{})
 
 	cache, err := New[string, int](ctx, WithPersistence(persister))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Get should load from persistence
 	val, found, err := cache.Get(ctx, "key1")
@@ -228,13 +228,13 @@ func TestCache_GetFromPersistenceExpired(t *testing.T) {
 	persister := newMockPersister[string, int]()
 
 	// Pre-populate with expired entry
-	persister.Store(ctx, "key1", 42, time.Now().Add(-1*time.Hour))
+	_ = persister.Store(ctx, "key1", 42, time.Now().Add(-1*time.Hour))
 
 	cache, err := New[string, int](ctx, WithPersistence(persister))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Get should return not found for expired entry
 	_, found, err := cache.Get(ctx, "key1")
@@ -252,7 +252,7 @@ func TestCache_WithWarmup(t *testing.T) {
 
 	// Pre-populate persistence with 10 items
 	for i := range 10 {
-		persister.Store(ctx, fmt.Sprintf("key%d", i), i, time.Time{})
+		_ = persister.Store(ctx, fmt.Sprintf("key%d", i), i, time.Time{})
 	}
 
 	// Create cache with warmup limit of 5
@@ -262,7 +262,7 @@ func TestCache_WithWarmup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Give warmup goroutine time to complete
 	time.Sleep(100 * time.Millisecond)
@@ -282,9 +282,9 @@ func TestCache_WithCleanupOnStartup(t *testing.T) {
 
 	// Pre-populate with expired entries
 	past := time.Now().Add(-2 * time.Hour)
-	persister.Store(ctx, "expired1", 1, past)
-	persister.Store(ctx, "expired2", 2, past)
-	persister.Store(ctx, "valid", 3, time.Time{})
+	_ = persister.Store(ctx, "expired1", 1, past)
+	_ = persister.Store(ctx, "expired2", 2, past)
+	_ = persister.Store(ctx, "valid", 3, time.Time{})
 
 	// Create cache with cleanup
 	cache, err := New[string, int](ctx,
@@ -293,16 +293,22 @@ func TestCache_WithCleanupOnStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Expired entries should be cleaned up
-	_, _, found, _ := persister.Load(ctx, "expired1")
+	_, _, found, err := persister.Load(ctx, "expired1")
+	if err != nil {
+		t.Fatalf("persister.Load: %v", err)
+	}
 	if found {
 		t.Error("expired1 should have been cleaned up")
 	}
 
 	// Valid entry should remain
-	_, _, found, _ = persister.Load(ctx, "valid")
+	_, _, found, err = persister.Load(ctx, "valid")
+	if err != nil {
+		t.Fatalf("persister.Load: %v", err)
+	}
 	if !found {
 		t.Error("valid entry should still exist")
 	}
@@ -316,7 +322,7 @@ func TestCache_SetAsyncWithPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// SetAsync should not block but value should be available immediately
 	if err := cache.SetAsync(ctx, "key1", 42, 0); err != nil {
@@ -324,7 +330,10 @@ func TestCache_SetAsyncWithPersistence(t *testing.T) {
 	}
 
 	// Value should be in memory
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Error("key1 should be available immediately after SetAsync")
 	}
@@ -333,7 +342,10 @@ func TestCache_SetAsyncWithPersistence(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Should also be persisted
-	val, _, found, _ = persister.Load(ctx, "key1")
+	val, _, found, err = persister.Load(ctx, "key1")
+	if err != nil {
+		t.Fatalf("persister.Load: %v", err)
+	}
 	if !found || val != 42 {
 		t.Error("key1 should be persisted after SetAsync")
 	}
@@ -366,7 +378,7 @@ func TestCache_PersistenceErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Set returns error when persistence fails (by design)
 	// Value is still in memory, but error is returned to caller
@@ -376,7 +388,10 @@ func TestCache_PersistenceErrors(t *testing.T) {
 	}
 
 	// Value should still be in memory despite persistence error
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Error("key1 should be in memory even though persistence failed")
 	}
@@ -388,7 +403,10 @@ func TestCache_PersistenceErrors(t *testing.T) {
 	}
 
 	// Value should be in memory
-	val, found, _ = cache.Get(ctx, "key3")
+	val, found, err = cache.Get(ctx, "key3")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 300 {
 		t.Error("key3 should be in memory after SetAsync")
 	}
@@ -399,7 +417,10 @@ func TestCache_PersistenceErrors(t *testing.T) {
 	if err := cache.Set(ctx, "key2", 100, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	val, found, _ = cache.Get(ctx, "key2")
+	val, found, err = cache.Get(ctx, "key2")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 100 {
 		t.Error("Get should work from memory even if persistence load fails")
 	}
@@ -413,7 +434,7 @@ func TestCache_Delete_Errors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Store a value (with failSet = false)
 	persister.failSet = false
@@ -422,7 +443,10 @@ func TestCache_Delete_Errors(t *testing.T) {
 	}
 
 	// Verify it's in memory
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Fatal("key1 should be in memory before delete")
 	}
@@ -434,7 +458,10 @@ func TestCache_Delete_Errors(t *testing.T) {
 	// Note: Even though persistence delete failed, key is deleted from memory.
 	// However, Get will load it back from persistence since it's still there.
 	// This tests graceful degradation - memory is cleaned up even if persistence fails.
-	val2, found2, _ := cache.Get(ctx, "key1")
+	val2, found2, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found2 || val2 != 42 {
 		// Get loads from persistence, so key is found again
 		t.Logf("key1 found from persistence after failed delete (expected): %v, %v", val2, found2)
@@ -456,7 +483,7 @@ func TestCache_Get_InvalidKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Get with empty key (invalid)
 	_, found, err := cache.Get(ctx, "")
@@ -476,10 +503,10 @@ func TestCache_Get_PersistenceLoadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Pre-populate persistence (not in memory)
-	persister.Store(ctx, "key1", 42, time.Time{})
+	_ = persister.Store(ctx, "key1", 42, time.Time{})
 
 	// Make persistence Load fail
 	persister.failGet = true
@@ -521,24 +548,24 @@ func TestCache_GhostQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Fill small queue (10% of 10 = 1)
 	// Insert items to trigger ghost queue
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i, 0); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
 
 	// Access some items to create hot items
-	for i := 0; i < 5; i++ {
-		cache.Get(ctx, fmt.Sprintf("key%d", i))
+	for i := range 5 {
+		_, _, _ = cache.Get(ctx, fmt.Sprintf("key%d", i))
 	}
 
 	// Insert more to trigger evictions from small queue to ghost queue
-	for i := 20; i < 40; i++ {
-		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i, 0); err != nil {
+	for i := range 15 {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i+20), i+20, 0); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -555,25 +582,25 @@ func TestCache_MainQueueEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Insert and access items to get them into Main queue
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		key := fmt.Sprintf("key%d", i)
 		if err := cache.Set(ctx, key, i, 0); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 		// Access to promote to Main
-		cache.Get(ctx, key)
+		_, _, _ = cache.Get(ctx, key)
 	}
 
 	// Insert more items to trigger eviction from Main queue
-	for i := 15; i < 25; i++ {
-		key := fmt.Sprintf("key%d", i)
-		if err := cache.Set(ctx, key, i, 0); err != nil {
+	for i := range 10 {
+		key := fmt.Sprintf("key%d", i+15)
+		if err := cache.Set(ctx, key, i+15, 0); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
-		cache.Get(ctx, key)
+		_, _, _ = cache.Get(ctx, key)
 	}
 
 	// Verify cache is at capacity
@@ -589,13 +616,13 @@ func TestCache_CleanupExpiredEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Store items with expiry
 	past := time.Now().Add(-1 * time.Hour)
-	cache.Set(ctx, "expired1", 1, -1*time.Hour) // Already expired
-	cache.Set(ctx, "expired2", 2, -1*time.Hour)
-	cache.Set(ctx, "valid", 3, 1*time.Hour)
+	_ = cache.Set(ctx, "expired1", 1, -1*time.Hour) // Already expired
+	_ = cache.Set(ctx, "expired2", 2, -1*time.Hour)
+	_ = cache.Set(ctx, "valid", 3, 1*time.Hour)
 
 	// Manually set expiry to past for testing
 	if err := cache.Set(ctx, "test-expired", 99, 0); err != nil {
@@ -613,7 +640,9 @@ func TestCache_CleanupExpiredEntries(t *testing.T) {
 	t.Logf("Cleanup deleted %d entries", deleted)
 
 	// Valid entry should still exist
-	if _, found, _ := cache.Get(ctx, "valid"); !found {
+	if _, found, err := cache.Get(ctx, "valid"); err != nil {
+		t.Fatalf("Get: %v", err)
+	} else if !found {
 		t.Error("valid entry should still exist after cleanup")
 	}
 }

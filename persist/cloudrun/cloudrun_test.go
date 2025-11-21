@@ -13,10 +13,10 @@ func TestNew_LocalFallback(t *testing.T) {
 
 	// Ensure K_SERVICE is not set
 	oldVal := os.Getenv("K_SERVICE")
-	os.Unsetenv("K_SERVICE")
+	_ = os.Unsetenv("K_SERVICE")
 	defer func() {
 		if oldVal != "" {
-			os.Setenv("K_SERVICE", oldVal)
+			_ = os.Setenv("K_SERVICE", oldVal)
 		}
 	}()
 
@@ -24,7 +24,11 @@ func TestNew_LocalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Verify it's using local files by checking the Location format
 	loc := p.Location("test-key")
@@ -38,12 +42,12 @@ func TestNew_CloudRunWithoutDatastore(t *testing.T) {
 
 	// Set K_SERVICE to simulate Cloud Run
 	oldVal := os.Getenv("K_SERVICE")
-	os.Setenv("K_SERVICE", "test-service")
+	_ = os.Setenv("K_SERVICE", "test-service")
 	defer func() {
 		if oldVal != "" {
-			os.Setenv("K_SERVICE", oldVal)
+			_ = os.Setenv("K_SERVICE", oldVal)
 		} else {
-			os.Unsetenv("K_SERVICE")
+			_ = os.Unsetenv("K_SERVICE")
 		}
 	}()
 
@@ -52,7 +56,11 @@ func TestNew_CloudRunWithoutDatastore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() should fall back to localfs even when datastore fails: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Verify it fell back to local files
 	loc := p.Location("test-key")
@@ -68,7 +76,11 @@ func TestNew_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Test basic store/load cycle
 	key := "answer"
@@ -96,10 +108,10 @@ func TestNew_DetectsCloudRun(t *testing.T) {
 
 	// Unset K_SERVICE to test non-Cloud Run path
 	oldVal := os.Getenv("K_SERVICE")
-	os.Unsetenv("K_SERVICE")
+	_ = os.Unsetenv("K_SERVICE")
 	defer func() {
 		if oldVal != "" {
-			os.Setenv("K_SERVICE", oldVal)
+			_ = os.Setenv("K_SERVICE", oldVal)
 		}
 	}()
 
@@ -107,7 +119,11 @@ func TestNew_DetectsCloudRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Should use local files (check location format)
 	loc := p.Location("testkey")
@@ -147,7 +163,11 @@ func TestNew_MultipleTypes(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				defer p.Close()
+				defer func() {
+					if err := p.Close(); err != nil {
+						t.Logf("Close error: %v", err)
+					}
+				}()
 				return p.Store(ctx, "key", 42, time.Time{})
 			},
 		},
@@ -158,7 +178,11 @@ func TestNew_MultipleTypes(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				defer p.Close()
+				defer func() {
+					if err := p.Close(); err != nil {
+						t.Logf("Close error: %v", err)
+					}
+				}()
 				return p.Store(ctx, 123, "value", time.Time{})
 			},
 		},
@@ -173,7 +197,11 @@ func TestNew_MultipleTypes(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				defer p.Close()
+				defer func() {
+					if err := p.Close(); err != nil {
+						t.Logf("Close error: %v", err)
+					}
+				}()
 				return p.Store(ctx, "user", TestStruct{Name: "Alice", Age: 30}, time.Time{})
 			},
 		},
@@ -193,12 +221,12 @@ func TestNew_CloudRunFallbackWithDelete(t *testing.T) {
 
 	// Set K_SERVICE to simulate Cloud Run
 	oldVal := os.Getenv("K_SERVICE")
-	os.Setenv("K_SERVICE", "test-service-delete")
+	_ = os.Setenv("K_SERVICE", "test-service-delete")
 	defer func() {
 		if oldVal != "" {
-			os.Setenv("K_SERVICE", oldVal)
+			_ = os.Setenv("K_SERVICE", oldVal)
 		} else {
-			os.Unsetenv("K_SERVICE")
+			_ = os.Unsetenv("K_SERVICE")
 		}
 	}()
 
@@ -206,7 +234,11 @@ func TestNew_CloudRunFallbackWithDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store and delete
 	if err := p.Store(ctx, "key1", 100, time.Time{}); err != nil {
@@ -234,7 +266,11 @@ func TestNew_ValidateKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Test valid key
 	if err := p.ValidateKey("valid-key"); err != nil {
@@ -263,7 +299,11 @@ func TestNew_LoadRecentEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// LoadRecent on empty cache
 	entryCh, errCh := p.LoadRecent(ctx, 0)
@@ -293,7 +333,11 @@ func TestNew_Cleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Cleanup should work without errors
 	count, err := p.Cleanup(ctx, 1*time.Hour)

@@ -509,10 +509,18 @@ func TestDatastorePersist_Mock_Cleanup(t *testing.T) {
 	recentPast := time.Now().Add(-90 * time.Minute)
 	future := time.Now().Add(2 * time.Hour)
 
-	dp.Store(ctx, "expired-old", 1, past)
-	dp.Store(ctx, "expired-recent", 2, recentPast)
-	dp.Store(ctx, "valid-future", 3, future)
-	dp.Store(ctx, "no-expiry", 4, time.Time{})
+	if err := dp.Store(ctx, "expired-old", 1, past); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "expired-recent", 2, recentPast); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "valid-future", 3, future); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "no-expiry", 4, time.Time{}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
 
 	// Cleanup entries older than 1 hour
 	// Note: ds9 mock doesn't properly handle time-based filters,
@@ -625,10 +633,18 @@ func TestDatastorePersist_Mock_LoadRecent_SkipExpired(t *testing.T) {
 	past := time.Now().Add(-1 * time.Hour)
 	future := time.Now().Add(1 * time.Hour)
 
-	dp.Store(ctx, "expired1", 1, past)
-	dp.Store(ctx, "expired2", 2, past)
-	dp.Store(ctx, "valid1", 3, future)
-	dp.Store(ctx, "valid2", 4, future)
+	if err := dp.Store(ctx, "expired1", 1, past); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "expired2", 2, past); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "valid1", 3, future); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "valid2", 4, future); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
 
 	// LoadRecent should skip expired
 	entryCh, errCh := dp.LoadRecent(ctx, 0)
@@ -722,7 +738,10 @@ func TestDatastorePersist_Mock_MultipleOps(t *testing.T) {
 		t.Fatalf("Store 1: %v", err)
 	}
 
-	val, _, found, _ := dp.Load(ctx, "key")
+	val, _, found, err := dp.Load(ctx, "key")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if !found || val != 1 {
 		t.Error("After Store 1: key should be 1")
 	}
@@ -731,7 +750,10 @@ func TestDatastorePersist_Mock_MultipleOps(t *testing.T) {
 		t.Fatalf("Store 2: %v", err)
 	}
 
-	val, _, found, _ = dp.Load(ctx, "key")
+	val, _, found, err = dp.Load(ctx, "key")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if !found || val != 2 {
 		t.Error("After Store 2: key should be 2")
 	}
@@ -740,7 +762,10 @@ func TestDatastorePersist_Mock_MultipleOps(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, _, found, _ = dp.Load(ctx, "key")
+	_, _, found, err = dp.Load(ctx, "key")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if found {
 		t.Error("After Delete: key should not be found")
 	}

@@ -481,7 +481,7 @@ func TestCache_WithOptions(t *testing.T) {
 	if cache.opts.MemorySize != 500 {
 		t.Errorf("memory size = %d; want 500", cache.opts.MemorySize)
 	}
-	cache.Close()
+	_ = cache.Close()
 
 	// Test WithDefaultTTL
 	cache, err = New[string, int](ctx, WithDefaultTTL(5*time.Minute))
@@ -491,7 +491,7 @@ func TestCache_WithOptions(t *testing.T) {
 	if cache.opts.DefaultTTL != 5*time.Minute {
 		t.Errorf("default TTL = %v; want 5m", cache.opts.DefaultTTL)
 	}
-	cache.Close()
+	_ = cache.Close()
 
 	// Test WithWarmup
 	cache, err = New[string, int](ctx, WithWarmup(100))
@@ -501,7 +501,7 @@ func TestCache_WithOptions(t *testing.T) {
 	if cache.opts.WarmupLimit != 100 {
 		t.Errorf("warmup limit = %d; want 100", cache.opts.WarmupLimit)
 	}
-	cache.Close()
+	_ = cache.Close()
 
 	// Test WithCleanup
 	cache, err = New[string, int](ctx, WithCleanup(1*time.Hour))
@@ -514,7 +514,7 @@ func TestCache_WithOptions(t *testing.T) {
 	if cache.opts.CleanupMaxAge != 1*time.Hour {
 		t.Errorf("cleanup max age = %v; want 1h", cache.opts.CleanupMaxAge)
 	}
-	cache.Close()
+	_ = cache.Close()
 }
 
 func TestCache_DeleteNonExistent(t *testing.T) {
@@ -523,7 +523,7 @@ func TestCache_DeleteNonExistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Delete non-existent key should not error
 	cache.Delete(ctx, "does-not-exist")
@@ -532,7 +532,10 @@ func TestCache_DeleteNonExistent(t *testing.T) {
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	val, found, _ := cache.Get(ctx, "key1")
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !found || val != 42 {
 		t.Error("cache should still work after deleting non-existent key")
 	}
@@ -545,19 +548,19 @@ func TestCache_EvictFromMain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Fill small queue and promote items to main by accessing them twice
 	for i := range 15 {
-		cache.Set(ctx, i, i, 0)
+		_ = cache.Set(ctx, i, i, 0)
 		// Access immediately to promote to main
-		cache.Get(ctx, i)
+		_, _, _ = cache.Get(ctx, i)
 	}
 
 	// Add more items to force eviction from main queue
-	for i := 100; i < 110; i++ {
-		cache.Set(ctx, i, i, 0)
-		cache.Get(ctx, i)
+	for i := range 10 {
+		_ = cache.Set(ctx, i+100, i+100, 0)
+		_, _, _ = cache.Get(ctx, i+100)
 	}
 
 	// Cache should not exceed capacity
@@ -572,7 +575,7 @@ func TestCache_GetExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Set with very short TTL
 	if err := cache.Set(ctx, "key1", 42, 1*time.Millisecond); err != nil {
@@ -598,7 +601,7 @@ func TestCache_SetUpdateExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// Set initial value
 	if err := cache.Set(ctx, "key1", 42, 0); err != nil {

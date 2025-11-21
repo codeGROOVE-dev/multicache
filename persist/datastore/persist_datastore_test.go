@@ -260,7 +260,11 @@ func TestDatastorePersist_ValidateKey(t *testing.T) {
 		// Can't create client, but we can still test the validation logic
 		t.Skip("Skipping: no datastore access")
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	tests := []struct {
 		name    string
@@ -291,7 +295,11 @@ func TestDatastorePersist_Location(t *testing.T) {
 	if err != nil {
 		t.Skip("Skipping: no datastore access")
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	loc := dp.Location("mykey")
 	if loc == "" {
@@ -312,7 +320,11 @@ func TestDatastorePersist_LoadRecent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store multiple entries
 	for i := range 5 {
@@ -347,7 +359,9 @@ func TestDatastorePersist_LoadRecent(t *testing.T) {
 	// Cleanup
 	for i := range 5 {
 		key := "test-" + string(rune('a'+i))
-		dp.Delete(ctx, key)
+		if err := dp.Delete(ctx, key); err != nil {
+			t.Logf("Delete error: %v", err)
+		}
 	}
 }
 
@@ -359,16 +373,28 @@ func TestDatastorePersist_Cleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Store entries with different expiry times
 	past := time.Now().Add(-2 * time.Hour)
 	future := time.Now().Add(2 * time.Hour)
 
-	dp.Store(ctx, "expired-1", 1, past)
-	dp.Store(ctx, "expired-2", 2, past)
-	dp.Store(ctx, "valid-1", 3, future)
-	dp.Store(ctx, "no-expiry", 4, time.Time{})
+	if err := dp.Store(ctx, "expired-1", 1, past); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "expired-2", 2, past); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "valid-1", 3, future); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := dp.Store(ctx, "no-expiry", 4, time.Time{}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
 
 	// Cleanup entries older than 1 hour
 	count, err := dp.Cleanup(ctx, 1*time.Hour)
@@ -382,8 +408,12 @@ func TestDatastorePersist_Cleanup(t *testing.T) {
 	}
 
 	// Cleanup remaining test entries
-	dp.Delete(ctx, "valid-1")
-	dp.Delete(ctx, "no-expiry")
+	if err := dp.Delete(ctx, "valid-1"); err != nil {
+		t.Logf("Delete error: %v", err)
+	}
+	if err := dp.Delete(ctx, "no-expiry"); err != nil {
+		t.Logf("Delete error: %v", err)
+	}
 }
 
 func TestDatastorePersist_CleanupEmpty(t *testing.T) {
@@ -394,7 +424,11 @@ func TestDatastorePersist_CleanupEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer dp.Close()
+	defer func() {
+		if err := dp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
 
 	// Cleanup with no expired entries
 	count, err := dp.Cleanup(ctx, 1*time.Hour)

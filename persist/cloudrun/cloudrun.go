@@ -27,14 +27,13 @@ func New[K comparable, V any](ctx context.Context, cacheID string) (bdcache.Pers
 
 		// Try Datastore first in Cloud Run
 		p, err := datastore.New[K, V](ctx, cacheID)
-		if err != nil {
-			slog.Warn("datastore unavailable in cloud run, falling back to local files",
-				"error", err,
-				"cacheID", cacheID)
-		} else {
+		if err == nil {
 			slog.Info("using datastore persistence", "cacheID", cacheID)
 			return p, nil
 		}
+		slog.Warn("datastore unavailable in cloud run, falling back to local files",
+			"error", err,
+			"cacheID", cacheID)
 	}
 
 	// Fall back to local files (either not in Cloud Run, or Datastore failed)
