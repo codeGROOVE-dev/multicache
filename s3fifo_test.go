@@ -493,3 +493,66 @@ func TestS3FIFODetailed(t *testing.T) {
 		t.Errorf("Expected all 5 hot items to survive, got %d", hotSurvived)
 	}
 }
+
+func TestS3FIFO_Flush(t *testing.T) {
+	cache := newS3FIFO[string, int](100)
+
+	// Add some items
+	for i := range 50 {
+		cache.setToMemory(fmt.Sprintf("key%d", i), i, time.Time{})
+	}
+
+	// Access some to promote to main queue
+	for i := range 10 {
+		cache.getFromMemory(fmt.Sprintf("key%d", i))
+	}
+
+	if cache.memoryLen() != 50 {
+		t.Errorf("cache length = %d; want 50", cache.memoryLen())
+	}
+
+	// Flush
+	removed := cache.flushMemory()
+	if removed != 50 {
+		t.Errorf("flushMemory removed %d items; want 50", removed)
+	}
+
+	// Cache should be empty
+	if cache.memoryLen() != 0 {
+		t.Errorf("cache length after flush = %d; want 0", cache.memoryLen())
+	}
+
+	// Small and main queues should be empty
+	if cache.small.Len() != 0 {
+		t.Errorf("small queue length = %d; want 0", cache.small.Len())
+	}
+	if cache.main.Len() != 0 {
+		t.Errorf("main queue length = %d; want 0", cache.main.Len())
+	}
+	if cache.ghost.Len() != 0 {
+		t.Errorf("ghost queue length = %d; want 0", cache.ghost.Len())
+	}
+
+	// All keys should be gone
+	for i := range 50 {
+		if _, ok := cache.getFromMemory(fmt.Sprintf("key%d", i)); ok {
+			t.Errorf("key%d should not be found after flush", i)
+		}
+	}
+
+	// Can add new items after flush
+	cache.setToMemory("new", 999, time.Time{})
+	if val, ok := cache.getFromMemory("new"); !ok || val != 999 {
+		t.Errorf("get(new) = %v, %v; want 999, true", val, ok)
+	}
+}
+
+func TestS3FIFO_FlushEmpty(t *testing.T) {
+	cache := newS3FIFO[string, int](100)
+
+	// Flush empty cache
+	removed := cache.flushMemory()
+	if removed != 0 {
+		t.Errorf("flushMemory removed %d items; want 0", removed)
+	}
+}

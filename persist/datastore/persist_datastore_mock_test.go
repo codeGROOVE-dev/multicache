@@ -3,6 +3,7 @@ package datastore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -768,5 +769,63 @@ func TestDatastorePersist_Mock_MultipleOps(t *testing.T) {
 	}
 	if found {
 		t.Error("After Delete: key should not be found")
+	}
+}
+
+func TestDatastorePersist_Mock_Flush(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Store multiple entries
+	for i := range 10 {
+		key := fmt.Sprintf("key%d", i)
+		if err := dp.Store(ctx, key, i*100, time.Time{}); err != nil {
+			t.Fatalf("Store %s: %v", key, err)
+		}
+	}
+
+	// Verify entries exist
+	for i := range 10 {
+		key := fmt.Sprintf("key%d", i)
+		if _, _, found, err := dp.Load(ctx, key); err != nil || !found {
+			t.Fatalf("%s should exist before flush", key)
+		}
+	}
+
+	// Flush
+	deleted, err := dp.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("Flush deleted %d entries; want 10", deleted)
+	}
+
+	// All entries should be gone
+	for i := range 10 {
+		key := fmt.Sprintf("key%d", i)
+		if _, _, found, err := dp.Load(ctx, key); err != nil {
+			t.Fatalf("Load: %v", err)
+		} else if found {
+			t.Errorf("%s should not exist after flush", key)
+		}
+	}
+}
+
+func TestDatastorePersist_Mock_FlushEmpty(t *testing.T) {
+	dp, cleanup := newMockDatastorePersist[string, int](t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Flush empty datastore
+	deleted, err := dp.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("Flush deleted %d entries from empty datastore; want 0", deleted)
 	}
 }

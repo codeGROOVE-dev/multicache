@@ -302,3 +302,18 @@ func (c *s3fifo[K, V]) cleanupMemory() int {
 
 	return removed
 }
+
+// flushMemory removes all entries from the in-memory cache.
+// Returns the number of entries removed.
+func (c *s3fifo[K, V]) flushMemory() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	n := len(c.items)
+	c.items = make(map[K]*entry[K, V])
+	c.small.Init()
+	c.main.Init()
+	c.ghost.Init()
+	c.ghostKeys = make(map[K]*list.Element)
+	return n
+}

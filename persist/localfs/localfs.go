@@ -462,6 +462,44 @@ func (p *persister[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (in
 	return deleted, nil
 }
 
+// Flush removes all entries from the file-based cache.
+// Returns the number of entries removed and any error.
+func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
+	n := 0
+	err := filepath.Walk(p.Dir, func(path string, fi os.FileInfo, err error) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err != nil {
+			slog.Debug("error walking cache dir during flush", "path", path, "error", err)
+			return nil
+		}
+		if fi.IsDir() || filepath.Ext(fi.Name()) != ".gob" {
+			return nil
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Debug("failed to remove file during flush", "file", path, "error", err)
+			return nil
+		}
+		n++
+		return nil
+	})
+	if err != nil {
+		return n, fmt.Errorf("walk directory: %w", err)
+	}
+
+	p.subdirsMu.Lock()
+	p.subdirsMade = make(map[string]bool)
+	p.subdirsMu.Unlock()
+
+	if n > 0 {
+		slog.Info("flushed file cache", "count", n, "dir", p.Dir)
+	}
+	return n, nil
+}
+
 // Close cleans up resources.
 func (*persister[K, V]) Close() error {
 	// No resources to clean up for file-based persistence

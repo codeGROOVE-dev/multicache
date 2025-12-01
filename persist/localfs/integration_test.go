@@ -902,3 +902,102 @@ func TestFilePersist_Cleanup_ContextCancellation(t *testing.T) {
 		t.Errorf("expected context.Canceled error, got: %v", err)
 	}
 }
+
+func TestFilePersist_Flush(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Store multiple entries
+	for i := range 10 {
+		if err := fp.Store(ctx, fmt.Sprintf("key-%d", i), i*100, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Verify files exist
+	for i := range 10 {
+		if _, _, found, err := fp.Load(ctx, fmt.Sprintf("key-%d", i)); err != nil || !found {
+			t.Fatalf("key-%d should exist before flush", i)
+		}
+	}
+
+	// Flush
+	deleted, err := fp.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("Flush deleted %d entries; want 10", deleted)
+	}
+
+	// All entries should be gone
+	for i := range 10 {
+		if _, _, found, err := fp.Load(ctx, fmt.Sprintf("key-%d", i)); err != nil {
+			t.Fatalf("Load: %v", err)
+		} else if found {
+			t.Errorf("key-%d should not exist after flush", i)
+		}
+	}
+}
+
+func TestFilePersist_Flush_Empty(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Flush empty cache
+	deleted, err := fp.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("Flush deleted %d entries; want 0", deleted)
+	}
+}
+
+func TestFilePersist_Flush_ContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Store many entries
+	for i := range 100 {
+		if err := fp.Store(context.Background(), fmt.Sprintf("key-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Create context that we'll cancel
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Try to flush
+	_, err = fp.Flush(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+}

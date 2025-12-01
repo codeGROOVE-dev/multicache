@@ -39,6 +39,10 @@ type PersistenceLayer[K comparable, V any] interface {
 	// Useful for testing and debugging to verify where items are stored.
 	Location(key K) string
 
+	// Flush removes all entries from persistent storage.
+	// Returns the number of entries removed and any error.
+	Flush(ctx context.Context) (int, error)
+
 	// Close releases any resources held by the persistence layer.
 	Close() error
 }

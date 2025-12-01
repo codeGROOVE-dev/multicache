@@ -294,6 +294,47 @@ func (*persister[K, V]) Cleanup(_ context.Context, _ time.Duration) (int, error)
 	return 0, nil
 }
 
+// Flush removes all entries with this cache's prefix from Valkey.
+// Returns the number of entries removed and any error.
+func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
+	n := 0
+	pat := p.prefix + "*"
+	var cursor uint64
+
+	for {
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err()
+		default:
+		}
+
+		cmd := p.client.B().Scan().Cursor(cursor).Match(pat).Count(100).Build()
+		scan, err := p.client.Do(ctx, cmd).AsScanEntry()
+		if err != nil {
+			return n, fmt.Errorf("scan keys: %w", err)
+		}
+
+		if len(scan.Elements) > 0 {
+			del := p.client.B().Del().Key(scan.Elements...).Build()
+			if c, err := p.client.Do(ctx, del).AsInt64(); err != nil {
+				slog.Warn("failed to delete keys during flush", "error", err)
+			} else {
+				n += int(c)
+			}
+		}
+
+		cursor = scan.Cursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if n > 0 {
+		slog.Info("flushed valkey cache", "count", n, "prefix", p.prefix)
+	}
+	return n, nil
+}
+
 // Close releases Valkey client resources.
 func (p *persister[K, V]) Close() error {
 	p.client.Close()

@@ -149,6 +149,15 @@ func (m *mockPersister[K, V]) Location(key K) string {
 	return fmt.Sprintf("mock://%v", key)
 }
 
+func (m *mockPersister[K, V]) Flush(ctx context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := len(m.data)
+	m.data = make(map[string]mockEntry[V])
+	return count, nil
+}
+
 func (m *mockPersister[K, V]) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -645,5 +654,68 @@ func TestCache_CleanupExpiredEntries(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	} else if !found {
 		t.Error("valid entry should still exist after cleanup")
+	}
+}
+
+func TestCache_FlushWithPersistence(t *testing.T) {
+	ctx := context.Background()
+	persister := newMockPersister[string, int]()
+
+	cache, err := New[string, int](ctx, WithPersistence(persister))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	// Add entries
+	for i := range 10 {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*100, 0); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Verify entries exist in both memory and persistence
+	if cache.Len() != 10 {
+		t.Errorf("memory cache length = %d; want 10", cache.Len())
+	}
+	for i := range 10 {
+		if _, _, found, err := persister.Load(ctx, fmt.Sprintf("key%d", i)); err != nil || !found {
+			t.Fatalf("key%d should exist in persistence", i)
+		}
+	}
+
+	// Flush
+	removed, err := cache.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	// Should remove 10 from memory + 10 from persistence = 20 total
+	if removed != 20 {
+		t.Errorf("Flush removed %d items; want 20", removed)
+	}
+
+	// Memory cache should be empty
+	if cache.Len() != 0 {
+		t.Errorf("memory cache length after flush = %d; want 0", cache.Len())
+	}
+
+	// Persistence should be empty
+	for i := range 10 {
+		if _, _, found, err := persister.Load(ctx, fmt.Sprintf("key%d", i)); err != nil {
+			t.Fatalf("Load: %v", err)
+		} else if found {
+			t.Errorf("key%d should not exist in persistence after flush", i)
+		}
+	}
+
+	// Get should return not found for all keys
+	for i := range 10 {
+		_, found, err := cache.Get(ctx, fmt.Sprintf("key%d", i))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if found {
+			t.Errorf("key%d should not be found after flush", i)
+		}
 	}
 }

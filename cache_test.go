@@ -2,6 +2,7 @@ package bdcache
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -623,5 +624,68 @@ func TestCache_SetUpdateExisting(t *testing.T) {
 	}
 	if val != 100 {
 		t.Errorf("Get value = %d; want 100", val)
+	}
+}
+
+func TestCache_Flush(t *testing.T) {
+	ctx := context.Background()
+	cache, err := New[string, int](ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	// Add entries
+	for i := range 10 {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i, 0); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	if cache.Len() != 10 {
+		t.Errorf("cache length = %d; want 10", cache.Len())
+	}
+
+	// Flush
+	removed, err := cache.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if removed != 10 {
+		t.Errorf("Flush removed %d items; want 10", removed)
+	}
+
+	// Cache should be empty
+	if cache.Len() != 0 {
+		t.Errorf("cache length after flush = %d; want 0", cache.Len())
+	}
+
+	// All keys should be gone
+	for i := range 10 {
+		_, found, err := cache.Get(ctx, fmt.Sprintf("key%d", i))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if found {
+			t.Errorf("key%d should not be found after flush", i)
+		}
+	}
+}
+
+func TestCache_FlushEmpty(t *testing.T) {
+	ctx := context.Background()
+	cache, err := New[string, int](ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	// Flush empty cache
+	removed, err := cache.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("Flush removed %d items; want 0", removed)
 	}
 }

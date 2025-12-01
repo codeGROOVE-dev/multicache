@@ -235,6 +235,25 @@ func (c *Cache[K, V]) Cleanup() int {
 	return c.memory.cleanupMemory()
 }
 
+// Flush removes all entries from the cache, including persistent storage.
+// Returns the total number of entries removed from memory and persistence.
+func (c *Cache[K, V]) Flush(ctx context.Context) (int, error) {
+	memoryRemoved := c.memory.flushMemory()
+
+	if c.persist == nil {
+		slog.Info("cache flushed", "memory", memoryRemoved, "persist", 0)
+		return memoryRemoved, nil
+	}
+
+	persistRemoved, err := c.persist.Flush(ctx)
+	if err != nil {
+		return memoryRemoved, fmt.Errorf("persistence flush failed: %w", err)
+	}
+
+	slog.Info("cache flushed", "memory", memoryRemoved, "persist", persistRemoved)
+	return memoryRemoved + persistRemoved, nil
+}
+
 // Len returns the number of items in the memory cache.
 func (c *Cache[K, V]) Len() int {
 	return c.memory.memoryLen()

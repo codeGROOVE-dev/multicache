@@ -281,6 +281,31 @@ func (p *persister[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (in
 	return len(keys), nil
 }
 
+// Flush removes all entries from Datastore.
+// Returns the number of entries removed and any error.
+func (p *persister[K, V]) Flush(ctx context.Context) (int, error) {
+	// Query for all keys
+	query := ds.NewQuery(p.kind).KeysOnly()
+
+	var entries []datastoreEntry
+	keys, err := p.client.GetAll(ctx, query, &entries)
+	if err != nil {
+		return 0, fmt.Errorf("query all entries: %w", err)
+	}
+
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	// Batch delete all entries
+	if err := p.client.DeleteMulti(ctx, keys); err != nil {
+		return 0, fmt.Errorf("delete all entries: %w", err)
+	}
+
+	slog.Info("flushed datastore cache", "count", len(keys), "kind", p.kind)
+	return len(keys), nil
+}
+
 // Close releases Datastore client resources.
 func (p *persister[K, V]) Close() error {
 	return p.client.Close()

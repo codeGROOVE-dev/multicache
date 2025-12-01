@@ -942,3 +942,87 @@ func TestValkeyPersist_LoadRecentEmpty(t *testing.T) {
 		t.Errorf("loaded %d entries from empty cache; want 0", loaded)
 	}
 }
+
+func TestValkeyPersist_Flush(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, int](ctx, "test-cache-flush", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Store 10 entries
+	for i := range 10 {
+		key := fmt.Sprintf("flush-key-%d", i)
+		if err := p.Store(ctx, key, i*100, time.Time{}); err != nil {
+			t.Fatalf("Store %s: %v", key, err)
+		}
+	}
+
+	// Verify entries exist
+	for i := range 10 {
+		key := fmt.Sprintf("flush-key-%d", i)
+		if _, _, found, err := p.Load(ctx, key); err != nil || !found {
+			t.Fatalf("%s should exist before flush", key)
+		}
+	}
+
+	// Flush
+	deleted, err := p.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("Flush deleted %d entries; want 10", deleted)
+	}
+
+	// All entries should be gone
+	for i := range 10 {
+		key := fmt.Sprintf("flush-key-%d", i)
+		if _, _, found, err := p.Load(ctx, key); err != nil {
+			t.Fatalf("Load: %v", err)
+		} else if found {
+			t.Errorf("%s should not exist after flush", key)
+		}
+	}
+}
+
+func TestValkeyPersist_FlushEmpty(t *testing.T) {
+	skipIfNoValkey(t)
+
+	ctx := context.Background()
+	addr := os.Getenv("VALKEY_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
+	p, err := New[string, int](ctx, "test-cache-flush-empty", addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Flush empty cache
+	deleted, err := p.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("Flush deleted %d entries from empty cache; want 0", deleted)
+	}
+}
