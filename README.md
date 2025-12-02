@@ -64,7 +64,7 @@ bdcache biases toward being the highest hit-rate for real-world workloads with t
 
 * #1 in hit-rate for real-world workloads (zipf)
 * #1 in single-threaded read latency (9 ns/op) - half the competition
-* #1 for read/write throughput - 10X faster writes than otter!
+* #1 for read/write throughput - up to 10X faster writes than otter!
 
 Here's the results from an M4 MacBook Pro - run `make bench` to see the results for yourself:
 
