@@ -6,12 +6,10 @@ import (
 
 // Options configures a Cache instance.
 type Options struct {
-	Persister      any
-	MemorySize     int
-	DefaultTTL     time.Duration
-	WarmupLimit    int
-	CleanupMaxAge  time.Duration
-	CleanupEnabled bool
+	Persister   any
+	MemorySize  int
+	DefaultTTL  time.Duration
+	WarmupLimit int
 }
 
 // Option is a functional option for configuring a Cache.
@@ -51,16 +49,5 @@ func WithPersistence[K comparable, V any](p PersistenceLayer[K, V]) Option {
 func WithWarmup(n int) Option {
 	return func(o *Options) {
 		o.WarmupLimit = n
-	}
-}
-
-// WithCleanup enables background cleanup of expired entries at startup.
-// maxAge should be set to your maximum TTL value - entries older than this are deleted.
-// This is a safety net for expired data and works alongside native Datastore TTL policies.
-// If native TTL is properly configured, this cleanup will be fast (no-op).
-func WithCleanup(maxAge time.Duration) Option {
-	return func(o *Options) {
-		o.CleanupEnabled = true
-		o.CleanupMaxAge = maxAge
 	}
 }

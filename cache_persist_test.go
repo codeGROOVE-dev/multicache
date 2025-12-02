@@ -292,44 +292,6 @@ func TestCache_WithWarmup(t *testing.T) {
 	}
 }
 
-func TestCache_WithCleanupOnStartup(t *testing.T) {
-	ctx := context.Background()
-	persister := newMockPersister[string, int]()
-
-	// Pre-populate with expired entries
-	past := time.Now().Add(-2 * time.Hour)
-	_ = persister.Store(ctx, "expired1", 1, past)     //nolint:errcheck // Test fixture
-	_ = persister.Store(ctx, "expired2", 2, past)     //nolint:errcheck // Test fixture
-	_ = persister.Store(ctx, "valid", 3, time.Time{}) //nolint:errcheck // Test fixture
-
-	// Create cache with cleanup
-	cache, err := New[string, int](ctx,
-		WithPersistence(persister),
-		WithCleanup(1*time.Hour))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	// Expired entries should be cleaned up
-	_, _, found, err := persister.Load(ctx, "expired1")
-	if err != nil {
-		t.Fatalf("persister.Load: %v", err)
-	}
-	if found {
-		t.Error("expired1 should have been cleaned up")
-	}
-
-	// Valid entry should remain
-	_, _, found, err = persister.Load(ctx, "valid")
-	if err != nil {
-		t.Fatalf("persister.Load: %v", err)
-	}
-	if !found {
-		t.Error("valid entry should still exist")
-	}
-}
-
 func TestCache_SetAsyncWithPersistence(t *testing.T) {
 	ctx := context.Background()
 	persister := newMockPersister[string, int]()
@@ -622,40 +584,6 @@ func TestCache_MainQueueEviction(t *testing.T) {
 	// Verify cache is at capacity
 	if cache.Len() > 64 {
 		t.Errorf("Cache length %d exceeds capacity 64", cache.Len())
-	}
-}
-
-func TestCache_CleanupExpiredEntries(t *testing.T) {
-	ctx := context.Background()
-
-	cache, err := New[string, int](ctx)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	// Store items with expiry
-	past := time.Now().Add(-1 * time.Hour)
-	_ = cache.Set(ctx, "expired1", 1, -1*time.Hour) //nolint:errcheck // Test fixture
-	_ = cache.Set(ctx, "expired2", 2, -1*time.Hour) //nolint:errcheck // Test fixture
-	_ = cache.Set(ctx, "valid", 3, 1*time.Hour)     //nolint:errcheck // Test fixture
-
-	// Manually set expiry to past for testing
-	if err := cache.Set(ctx, "test-expired", 99, 0); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	// Access internal state to set past expiry
-	cache.memory.setExpiry("test-expired", past)
-
-	// Run cleanup
-	deleted := cache.Cleanup()
-	t.Logf("Cleanup deleted %d entries", deleted)
-
-	// Valid entry should still exist
-	if _, found, err := cache.Get(ctx, "valid"); err != nil {
-		t.Fatalf("Get: %v", err)
-	} else if !found {
-		t.Error("valid entry should still exist after cleanup")
 	}
 }
 

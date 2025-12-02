@@ -466,14 +466,3 @@ func (c *s3fifo[K, V]) isInSmall(key K) bool {
 	}
 	return false
 }
-
-// setExpiry sets the expiry time for a key (for testing).
-func (c *s3fifo[K, V]) setExpiry(key K, expiry time.Time) {
-	s := c.getShard(key)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	items := s.items.Load()
-	if ent, ok := (*items)[key]; ok {
-		ent.expiryNano = timeToNano(expiry)
-	}
-}

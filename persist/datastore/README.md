@@ -20,9 +20,11 @@ import (
 // cacheID becomes the Datastore database name
 p, _ := datastore.New[string, User](ctx, "myapp")
 
+// Optional: clean up stale entries on startup
+p.Cleanup(ctx, 24*time.Hour)
+
 cache, _ := bdcache.New[string, User](ctx,
-    bdcache.WithPersistence(p),
-    bdcache.WithCleanup(24*time.Hour)) // Safety net
+    bdcache.WithPersistence(p))
 ```
 
 ## TTL Setup (Recommended)

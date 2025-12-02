@@ -135,48 +135,6 @@ func TestCache_DefaultTTL(t *testing.T) {
 	}
 }
 
-func TestCache_Cleanup(t *testing.T) {
-	ctx := context.Background()
-	cache, err := New[string, int](ctx)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() {
-		if err := cache.Close(); err != nil {
-			t.Logf("Close error: %v", err)
-		}
-	}()
-
-	// Add expired and valid entries
-	if err := cache.Set(ctx, "expired1", 1, 1*time.Millisecond); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := cache.Set(ctx, "expired2", 2, 1*time.Millisecond); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := cache.Set(ctx, "valid", 3, 1*time.Hour); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	// Wait for expiration
-	time.Sleep(10 * time.Millisecond)
-
-	// Run cleanup
-	removed := cache.Cleanup()
-	if removed != 2 {
-		t.Errorf("Cleanup removed %d items; want 2", removed)
-	}
-
-	// Valid entry should still exist
-	_, found, err := cache.Get(ctx, "valid")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !found {
-		t.Error("valid entry should still exist")
-	}
-}
-
 func TestCache_Concurrent(t *testing.T) {
 	ctx := context.Background()
 	cache, err := New[int, int](ctx, WithMemorySize(1000))
@@ -503,19 +461,6 @@ func TestCache_WithOptions(t *testing.T) {
 		t.Errorf("warmup limit = %d; want 100", cache.opts.WarmupLimit)
 	}
 	_ = cache.Close() //nolint:errcheck // Test cleanup
-
-	// Test WithCleanup
-	cache, err = New[string, int](ctx, WithCleanup(1*time.Hour))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if !cache.opts.CleanupEnabled {
-		t.Error("cleanup should be enabled")
-	}
-	if cache.opts.CleanupMaxAge != 1*time.Hour {
-		t.Errorf("cleanup max age = %v; want 1h", cache.opts.CleanupMaxAge)
-	}
-	_ = cache.Close() //nolint:errcheck // Test cleanup
 }
 
 func TestCache_DeleteNonExistent(t *testing.T) {
@@ -688,4 +633,44 @@ func TestCache_FlushEmpty(t *testing.T) {
 	if removed != 0 {
 		t.Errorf("Flush removed %d items; want 0", removed)
 	}
+}
+
+func TestCache_ReadPerformance(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping performance test with race detector enabled")
+	}
+
+	ctx := context.Background()
+	cache, err := New[int, int](ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	// Populate cache
+	for i := range 10000 {
+		if err := cache.Set(ctx, i, i, 0); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Warm up
+	for i := range 1000 {
+		_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Warm-up
+	}
+
+	// Measure read performance
+	const iterations = 100000
+	start := time.Now()
+	for i := range iterations {
+		_, _, _ = cache.Get(ctx, i%10000) //nolint:errcheck // Performance test
+	}
+	elapsed := time.Since(start)
+	nsPerOp := float64(elapsed.Nanoseconds()) / float64(iterations)
+
+	const maxNsPerOp = 20.0
+	if nsPerOp > maxNsPerOp {
+		t.Errorf("single-threaded read performance: %.2f ns/op exceeds %.0f ns/op threshold", nsPerOp, maxNsPerOp)
+	}
+	t.Logf("single-threaded read performance: %.2f ns/op", nsPerOp)
 }

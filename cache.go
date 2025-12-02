@@ -40,25 +40,6 @@ func New[K comparable, V any](ctx context.Context, options ...Option) (*Cache[K,
 		slog.Info("initialized cache with persistence")
 	}
 
-	// Run background cleanup if configured
-	if cache.persist != nil && opts.CleanupEnabled {
-		//nolint:contextcheck // Background cleanup uses detached context to complete independently
-		go func() {
-			// Create detached context with timeout - cleanup should complete independently
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-
-			deleted, err := cache.persist.Cleanup(bgCtx, opts.CleanupMaxAge)
-			if err != nil {
-				slog.Warn("error during cache cleanup", "error", err)
-				return
-			}
-			if deleted > 0 {
-				slog.Info("cache cleanup complete", "deleted", deleted)
-			}
-		}()
-	}
-
 	// Warm up cache from persistence if configured
 	if cache.persist != nil && opts.WarmupLimit > 0 {
 		//nolint:contextcheck // Background warmup uses detached context to complete independently
@@ -233,12 +214,6 @@ func (c *Cache[K, V]) Delete(ctx context.Context, key K) {
 			slog.Warn("persistence delete failed", "error", err, "key", key)
 		}
 	}
-}
-
-// Cleanup removes expired entries from the cache.
-// Returns the number of entries removed.
-func (c *Cache[K, V]) Cleanup() int {
-	return c.memory.cleanupMemory()
 }
 
 // Flush removes all entries from the cache, including persistent storage.

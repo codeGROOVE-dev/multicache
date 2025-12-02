@@ -2,7 +2,7 @@
 
 test:
 	@echo "Running tests in all modules..."
-	@find . -name go.mod -execdir go test -v -race -cover ./... \;
+	@find . -name go.mod -execdir go test -v -race -cover -run '^Test' ./... \;
 
 lint:
 	go vet ./...
