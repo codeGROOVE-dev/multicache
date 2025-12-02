@@ -543,7 +543,7 @@ func BenchmarkLRUSet(b *testing.B)       { benchLRUSet(b) }
 // Concurrent Throughput Benchmarks
 // =============================================================================
 
-const concurrentDuration = 2 * time.Second
+const concurrentDuration = 4 * time.Second
 
 type concurrentResult struct {
 	name   string

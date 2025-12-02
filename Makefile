@@ -13,7 +13,7 @@ bench:
 	go test -bench=. -benchmem
 
 benchmark:
-	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=300s
+	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=600s
 
 clean:
 	go clean -testcache
