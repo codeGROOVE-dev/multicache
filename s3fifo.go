@@ -8,12 +8,15 @@ import (
 	"time"
 )
 
-const numShards = 32
+const (
+	numShards = 32
+	shardMask = numShards - 1 // For fast modulo via bitwise AND
+)
 
 // s3fifo implements the S3-FIFO eviction algorithm from SOSP'23 paper
 // "FIFO queues are all you need for cache eviction"
 //
-// This implementation uses 16-way sharding for improved concurrent performance.
+// This implementation uses 32-way sharding for improved concurrent performance.
 // Each shard is an independent S3-FIFO instance with its own queues and lock.
 //
 // Algorithm per shard:
@@ -38,7 +41,11 @@ type s3fifo[K comparable, V any] struct {
 }
 
 // shard is an independent S3-FIFO cache partition.
+//
+//nolint:govet // fieldalignment: padding is intentional to prevent false sharing
 type shard[K comparable, V any] struct {
+	mu        sync.RWMutex
+	_         [40]byte // Padding to prevent false sharing (mutex is 24 bytes, pad to 64-byte cache line)
 	items     map[K]*entry[K, V]
 	small     *list.List
 	main      *list.List
@@ -47,17 +54,16 @@ type shard[K comparable, V any] struct {
 	capacity  int
 	smallCap  int
 	ghostCap  int
-	mu        sync.RWMutex
 }
 
 // entry represents a cached item with metadata.
 type entry[K comparable, V any] struct {
-	expiry   time.Time
-	key      K
-	value    V
-	element  *list.Element
-	accessed atomic.Bool // Fast "was accessed" flag for S3-FIFO promotion
-	inSmall  bool        // True if in Small queue, false if in Main
+	key        K
+	value      V
+	element    *list.Element
+	expiryNano int64       // Unix nanoseconds; 0 means no expiry
+	accessed   atomic.Bool // Fast "was accessed" flag for S3-FIFO promotion
+	inSmall    bool        // True if in Small queue, false if in Main
 }
 
 // newS3FIFO creates a new sharded S3-FIFO cache with the given total capacity.
@@ -109,35 +115,29 @@ func newShard[K comparable, V any](capacity int) *shard[K, V] {
 }
 
 // getShard returns the shard for a given key using type-optimized hashing.
+// Uses bitwise AND with shardMask for fast modulo (numShards must be power of 2).
 func (c *s3fifo[K, V]) getShard(key K) *shard[K, V] {
 	switch k := any(key).(type) {
 	case int:
 		if k < 0 {
 			k = -k
 		}
-		return c.shards[k%numShards]
+		return c.shards[k&shardMask]
 	case int64:
 		if k < 0 {
 			k = -k
 		}
-		return c.shards[k%numShards]
+		return c.shards[k&shardMask]
 	case uint:
-		return c.shards[k%numShards]
+		return c.shards[k&shardMask]
 	case uint64:
-		return c.shards[k%numShards]
+		return c.shards[k&shardMask]
 	case string:
-		var h maphash.Hash
-		h.SetSeed(c.seed)
-		//nolint:gosec // G104: maphash.Hash.WriteString never returns error
-		h.WriteString(k)
-		return c.shards[h.Sum64()%numShards]
+		return c.shards[maphash.String(c.seed, k)&shardMask]
 	default:
 		// Fallback for other types: convert to string and hash
-		var h maphash.Hash
-		h.SetSeed(c.seed)
-		//nolint:errcheck,gosec // maphash.Hash.WriteString never returns error
-		h.WriteString(any(key).(string))
-		return c.shards[h.Sum64()%numShards]
+		//nolint:errcheck,forcetypeassert // Only called for string-convertible types
+		return c.shards[maphash.String(c.seed, any(key).(string))&shardMask]
 	}
 }
 
@@ -157,7 +157,8 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 	}
 
 	// Fast path: check expiration while holding read lock
-	if !ent.expiry.IsZero() && time.Now().After(ent.expiry) {
+	// Single int64 comparison; time.Now().UnixNano() only called if item has expiry
+	if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
 		s.mu.RUnlock()
 		var zero V
 		return zero, false
@@ -175,18 +176,26 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 	return val, true
 }
 
-// setToMemory adds or updates a value in the in-memory cache.
-func (c *s3fifo[K, V]) setToMemory(key K, value V, expiry time.Time) {
-	c.getShard(key).set(key, value, expiry)
+// timeToNano converts time.Time to Unix nanoseconds; zero time becomes 0.
+func timeToNano(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
 }
 
-func (s *shard[K, V]) set(key K, value V, expiry time.Time) {
+// setToMemory adds or updates a value in the in-memory cache.
+func (c *s3fifo[K, V]) setToMemory(key K, value V, expiry time.Time) {
+	c.getShard(key).set(key, value, timeToNano(expiry))
+}
+
+func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	s.mu.Lock()
 
 	// Update existing entry
 	if ent, ok := s.items[key]; ok {
 		ent.value = value
-		ent.expiry = expiry
+		ent.expiryNano = expiryNano
 		s.mu.Unlock()
 		return
 	}
@@ -201,10 +210,10 @@ func (s *shard[K, V]) set(key K, value V, expiry time.Time) {
 
 	// Create new entry
 	ent := &entry[K, V]{
-		key:     key,
-		value:   value,
-		expiry:  expiry,
-		inSmall: !inGhost,
+		key:        key,
+		value:      value,
+		expiryNano: expiryNano,
+		inSmall:    !inGhost,
 	}
 
 	// Make room if at capacity
@@ -343,11 +352,11 @@ func (s *shard[K, V]) cleanup() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	nowNano := time.Now().UnixNano()
 	var expired []K
 
 	for key, ent := range s.items {
-		if !ent.expiry.IsZero() && now.After(ent.expiry) {
+		if ent.expiryNano != 0 && nowNano > ent.expiryNano {
 			expired = append(expired, key)
 		}
 	}
@@ -420,6 +429,6 @@ func (c *s3fifo[K, V]) setExpiry(key K, expiry time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ent, ok := s.items[key]; ok {
-		ent.expiry = expiry
+		ent.expiryNano = timeToNano(expiry)
 	}
 }
