@@ -972,6 +972,64 @@ func TestFilePersist_Flush_Empty(t *testing.T) {
 	}
 }
 
+func TestFilePersist_Flush_RemovesFiles(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, int]("test", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	cacheDir := fp.(*persister[string, int]).Dir
+
+	// Store multiple entries
+	for i := range 10 {
+		if err := fp.Store(ctx, fmt.Sprintf("key-%d", i), i*100, time.Time{}); err != nil {
+			t.Fatalf("Store: %v", err)
+		}
+	}
+
+	// Count .gob files on disk before flush
+	countGobFiles := func() int {
+		count := 0
+		_ = filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if !d.IsDir() && filepath.Ext(path) == ".gob" {
+				count++
+			}
+			return nil
+		})
+		return count
+	}
+
+	beforeFlush := countGobFiles()
+	if beforeFlush != 10 {
+		t.Errorf("expected 10 .gob files before flush, got %d", beforeFlush)
+	}
+
+	// Flush
+	deleted, err := fp.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if deleted != 10 {
+		t.Errorf("Flush deleted %d entries; want 10", deleted)
+	}
+
+	// Verify no .gob files remain
+	afterFlush := countGobFiles()
+	if afterFlush != 0 {
+		t.Errorf("expected 0 .gob files after flush, got %d", afterFlush)
+	}
+}
+
 func TestFilePersist_Flush_ContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	fp, err := New[string, int]("test", dir)

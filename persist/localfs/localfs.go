@@ -4,7 +4,9 @@ package localfs
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,18 +120,15 @@ func (*persister[K, V]) ValidateKey(key K) error {
 }
 
 // keyToFilename converts a cache key to a filename with squid-style directory layout.
-// Uses first 2 characters of key as subdirectory (e.g., "ab/abcd123.gob").
+// Hashes the key and uses first 2 characters of hex hash as subdirectory for even distribution
+// (e.g., key "http://example.com" -> "a3/a3f2...gob").
 func (*persister[K, V]) keyToFilename(key K) string {
 	keyStr := fmt.Sprintf("%v", key)
+	hash := sha256.Sum256([]byte(keyStr))
+	hexHash := hex.EncodeToString(hash[:])
 
-	// Squid-style: use first 2 chars as subdirectory
-	if len(keyStr) >= 2 {
-		subdir := keyStr[:2]
-		return filepath.Join(subdir, keyStr+".gob")
-	}
-
-	// For single-char keys, use the char itself as subdirectory
-	return filepath.Join(keyStr, keyStr+".gob")
+	// Squid-style: use first 2 chars of hash as subdirectory
+	return filepath.Join(hexHash[:2], hexHash+".gob")
 }
 
 // Location returns the full file path where a key is stored.
