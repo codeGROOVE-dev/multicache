@@ -41,12 +41,14 @@ type s3fifo[K comparable, V any] struct {
 }
 
 // shard is an independent S3-FIFO cache partition.
+// Uses lock-free reads via atomic pointer to items map.
+// Writes use mutex + copy-on-write for new keys.
 //
 //nolint:govet // fieldalignment: padding is intentional to prevent false sharing
 type shard[K comparable, V any] struct {
-	mu        sync.RWMutex
-	_         [40]byte // Padding to prevent false sharing (mutex is 24 bytes, pad to 64-byte cache line)
-	items     map[K]*entry[K, V]
+	mu        sync.Mutex                         // Only for writes
+	_         [48]byte                           // Padding to cache line boundary
+	items     atomic.Pointer[map[K]*entry[K, V]] // Lock-free read access
 	small     *list.List
 	main      *list.List
 	ghost     *list.List
@@ -102,16 +104,18 @@ func newShard[K comparable, V any](capacity int) *shard[K, V] {
 		ghostCap = 1
 	}
 
-	return &shard[K, V]{
+	s := &shard[K, V]{
 		capacity:  capacity,
 		smallCap:  smallCap,
 		ghostCap:  ghostCap,
-		items:     make(map[K]*entry[K, V], capacity),
 		small:     list.New(),
 		main:      list.New(),
 		ghost:     list.New(),
 		ghostKeys: make(map[K]*list.Element, ghostCap),
 	}
+	items := make(map[K]*entry[K, V], capacity)
+	s.items.Store(&items)
+	return s
 }
 
 // getShard returns the shard for a given key using type-optimized hashing.
@@ -148,24 +152,20 @@ func (c *s3fifo[K, V]) getFromMemory(key K) (V, bool) {
 }
 
 func (s *shard[K, V]) get(key K) (V, bool) {
-	s.mu.RLock()
-	ent, ok := s.items[key]
+	// Lock-free read via atomic pointer
+	items := s.items.Load()
+	ent, ok := (*items)[key]
 	if !ok {
-		s.mu.RUnlock()
 		var zero V
 		return zero, false
 	}
 
-	// Fast path: check expiration while holding read lock
+	// Check expiration (lazy - actual cleanup happens in background)
 	// Single int64 comparison; time.Now().UnixNano() only called if item has expiry
 	if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
-		s.mu.RUnlock()
 		var zero V
 		return zero, false
 	}
-
-	val := ent.value
-	s.mu.RUnlock()
 
 	// S3-FIFO: Mark as accessed for lazy promotion.
 	// Fast path: skip atomic store if already marked (avoids cache line invalidation).
@@ -173,7 +173,7 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 		ent.accessed.Store(true)
 	}
 
-	return val, true
+	return ent.value, true
 }
 
 // timeToNano converts time.Time to Unix nanoseconds; zero time becomes 0.
@@ -192,8 +192,10 @@ func (c *s3fifo[K, V]) setToMemory(key K, value V, expiry time.Time) {
 func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	s.mu.Lock()
 
-	// Update existing entry
-	if ent, ok := s.items[key]; ok {
+	oldItems := s.items.Load()
+
+	// Update existing entry (in-place, no map copy needed)
+	if ent, ok := (*oldItems)[key]; ok {
 		ent.value = value
 		ent.expiryNano = expiryNano
 		s.mu.Unlock()
@@ -216,8 +218,8 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 		inSmall:    !inGhost,
 	}
 
-	// Make room if at capacity
-	for len(s.items) >= s.capacity {
+	// Make room if at capacity (evict modifies map via s.items pointer)
+	for len(*s.items.Load()) >= s.capacity {
 		s.evict()
 	}
 
@@ -228,7 +230,14 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 		ent.element = s.main.PushBack(ent)
 	}
 
-	s.items[key] = ent
+	// Copy-on-write for new key
+	currentItems := s.items.Load()
+	newItems := make(map[K]*entry[K, V], len(*currentItems)+1)
+	for k, v := range *currentItems {
+		newItems[k] = v
+	}
+	newItems[key] = ent
+	s.items.Store(&newItems)
 	s.mu.Unlock()
 }
 
@@ -241,7 +250,8 @@ func (s *shard[K, V]) delete(key K) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ent, ok := s.items[key]
+	items := s.items.Load()
+	ent, ok := (*items)[key]
 	if !ok {
 		return
 	}
@@ -252,7 +262,7 @@ func (s *shard[K, V]) delete(key K) {
 		s.main.Remove(ent.element)
 	}
 
-	delete(s.items, key)
+	s.deleteFromMap(key)
 }
 
 // evict removes one item according to S3-FIFO algorithm.
@@ -279,7 +289,7 @@ func (s *shard[K, V]) evictFromSmall() {
 		// Check if accessed since last eviction attempt
 		if !ent.accessed.Swap(false) {
 			// Not accessed - evict and track in ghost
-			delete(s.items, ent.key)
+			s.deleteFromMap(ent.key)
 			s.addToGhost(ent.key)
 			return
 		}
@@ -305,13 +315,26 @@ func (s *shard[K, V]) evictFromMain() {
 		// Check if accessed since last eviction attempt
 		if !ent.accessed.Swap(false) {
 			// Not accessed - evict
-			delete(s.items, ent.key)
+			s.deleteFromMap(ent.key)
 			return
 		}
 
 		// Accessed - give second chance (FIFO-Reinsertion)
 		ent.element = s.main.PushBack(ent)
 	}
+}
+
+// deleteFromMap removes a key from the items map using copy-on-write.
+// Must be called with s.mu held.
+func (s *shard[K, V]) deleteFromMap(key K) {
+	oldItems := s.items.Load()
+	newItems := make(map[K]*entry[K, V], len(*oldItems))
+	for k, v := range *oldItems {
+		if k != key {
+			newItems[k] = v
+		}
+	}
+	s.items.Store(&newItems)
 }
 
 // addToGhost adds a key to the ghost queue.
@@ -332,9 +355,8 @@ func (s *shard[K, V]) addToGhost(key K) {
 func (c *s3fifo[K, V]) memoryLen() int {
 	total := 0
 	for _, s := range c.shards {
-		s.mu.RLock()
-		total += len(s.items)
-		s.mu.RUnlock()
+		items := s.items.Load()
+		total += len(*items)
 	}
 	return total
 }
@@ -352,24 +374,45 @@ func (s *shard[K, V]) cleanup() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	items := s.items.Load()
 	nowNano := time.Now().UnixNano()
 	var expired []K
 
-	for key, ent := range s.items {
+	for key, ent := range *items {
 		if ent.expiryNano != 0 && nowNano > ent.expiryNano {
 			expired = append(expired, key)
 		}
 	}
 
+	if len(expired) == 0 {
+		return 0
+	}
+
+	// Remove from queues
 	for _, key := range expired {
-		ent := s.items[key]
+		ent := (*items)[key]
 		if ent.inSmall {
 			s.small.Remove(ent.element)
 		} else {
 			s.main.Remove(ent.element)
 		}
-		delete(s.items, key)
 	}
+
+	// Batch copy-on-write for efficiency
+	newItems := make(map[K]*entry[K, V], len(*items)-len(expired))
+	for k, v := range *items {
+		keep := true
+		for _, expKey := range expired {
+			if k == expKey {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			newItems[k] = v
+		}
+	}
+	s.items.Store(&newItems)
 
 	return len(expired)
 }
@@ -387,8 +430,10 @@ func (s *shard[K, V]) flush() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := len(s.items)
-	s.items = make(map[K]*entry[K, V], s.capacity)
+	items := s.items.Load()
+	n := len(*items)
+	newItems := make(map[K]*entry[K, V], s.capacity)
+	s.items.Store(&newItems)
 	s.small.Init()
 	s.main.Init()
 	s.ghost.Init()
@@ -404,10 +449,10 @@ func (c *s3fifo[K, V]) totalCapacity() int {
 // queueLens returns total small and main queue lengths across all shards (for testing/debugging).
 func (c *s3fifo[K, V]) queueLens() (small, main int) {
 	for _, s := range c.shards {
-		s.mu.RLock()
+		s.mu.Lock()
 		small += s.small.Len()
 		main += s.main.Len()
-		s.mu.RUnlock()
+		s.mu.Unlock()
 	}
 	return small, main
 }
@@ -415,9 +460,8 @@ func (c *s3fifo[K, V]) queueLens() (small, main int) {
 // isInSmall returns whether a key is in the small queue (for testing).
 func (c *s3fifo[K, V]) isInSmall(key K) bool {
 	s := c.getShard(key)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if ent, ok := s.items[key]; ok {
+	items := s.items.Load()
+	if ent, ok := (*items)[key]; ok {
 		return ent.inSmall
 	}
 	return false
@@ -428,7 +472,8 @@ func (c *s3fifo[K, V]) setExpiry(key K, expiry time.Time) {
 	s := c.getShard(key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ent, ok := s.items[key]; ok {
+	items := s.items.Load()
+	if ent, ok := (*items)[key]; ok {
 		ent.expiryNano = timeToNano(expiry)
 	}
 }

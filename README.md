@@ -58,51 +58,116 @@ cache, _ := bdcache.New[string, User](ctx,
 - **Graceful degradation** - Cache works even if persistence fails
 - **Per-item TTL** - Optional expiration
 
-## Performance
+## Performance against the Competition
 
-For performance, bdcache biases toward:
+bdcache biases toward being the highest hit-rate for real-world workloads with the lowest read latency. We're not bad either!
 
-* the highest hit-rate in real-world workloads
-* the lowest CPU overhead for reads (high ns/op)
+* #1 in hit-rate for real-world workloads (zipf)
+* #1 in single-threaded read latency (9 ns/op) - half the competition
+* #1 for read/write throughput - 10X faster writes than otter!
 
-### CPU Overhead
-
-Benchmarks on MacBook Pro M4 Max comparing memory-only operations:
-
-  | Operation | bdcache     | LRU         | ristretto   | otter       |
-  |-----------|-------------|-------------|-------------|-------------|
-  | Get       | 8.63 ns/op  | 14.03 ns/op | 30.24 ns/op | 15.25 ns/op |
-  | Set       | 14.03 ns/op | 13.94 ns/op | 96.24 ns/op | 141.3 ns/op |
-
-bdcache is faster than anyone else for Get operations, while still faster than most implementations for Set. 
-
-See [benchmarks/](benchmarks/) for detailed methodology and running instructions.
-
-## Hit Rates
-
-For hit rates, bdcache is competitive with otter & tinylfu, often nudging out both depending on the benchmark scenario. Here's an independent benchmark using [scalalang2/go-cache-benchmark](https://github.com/scalalang2/go-cache-benchmark):
+Here's the results from an M4 MacBook Pro - run `make bench` to see the results for yourself:
 
 ```
-itemSize=500000, workloads=7500000, cacheSize=1.00%, zipf's alpha=0.99, concurrency=16
+### Hit Rate (Zipf α=0.99, 1M ops, 1M keyspace)
 
-       CACHE      | HITRATE |   QPS    |  HITS   | MISSES
-------------------+---------+----------+---------+----------
-  bdcache         | 64.45%  |  5572065 | 4833482 | 2666518
-  tinylfu         | 63.94%  |  2357008 | 4795685 | 2704315
-  s3-fifo         | 63.57%  |  2899111 | 4767672 | 2732328
-  sieve           | 63.40%  |  2697842 | 4754699 | 2745301
-  slru            | 62.88%  |  2655807 | 4715817 | 2784183
-  s4lru           | 62.67%  |  2877974 | 4700060 | 2799940
-  two-queue       | 61.99%  |  2362205 | 4649519 | 2850481
-  otter           | 61.86%  |  9457755 | 4639781 | 2860219
-  clock           | 56.11%  |  2956248 | 4208167 | 3291833
-  freelru-sharded | 55.45%  | 21067416 | 4159005 | 3340995
-  freelru-synced  | 55.38%  |  4244482 | 4153156 | 3346844
-  lru-groupcache  | 55.37%  |  2463863 | 4153022 | 3346978
-  lru-hashicorp   | 55.36%  |  2776749 | 4152099 | 3347901
-  ```
-  
-The QPS in this benchmark represents mixed Get/Set - otter in particular shines at concurrency
+| Cache      | Size=2.5% | Size=5% | Size=10% |
+|------------|-----------|---------|----------|
+| bdcache    |   94.89% | 95.09% |  95.09% |
+| otter      |   94.69% | 95.09% |  95.09% |
+| ristretto  |   92.45% | 93.02% |  93.55% |
+| tinylfu    |   94.87% | 95.09% |  95.09% |
+| freecache  |   94.15% | 94.75% |  95.09% |
+| lru        |   94.84% | 95.09% |  95.09% |
+
+### Single-Threaded Latency (sorted by Get)
+
+| Cache      | Get ns/op | Get B/op | Get allocs | Set ns/op | Set B/op | Set allocs |
+|------------|-----------|----------|------------|-----------|----------|------------|
+| bdcache    |       9.0 |        0 |          0 |      21.0 |        1 |          0 |
+| lru        |      23.0 |        0 |          0 |      22.0 |        0 |          0 |
+| ristretto  |      32.0 |       14 |          0 |      67.0 |      119 |          3 |
+| otter      |      35.0 |        0 |          0 |     139.0 |       51 |          1 |
+| freecache  |      71.0 |       15 |          1 |      56.0 |        4 |          0 |
+| tinylfu    |      83.0 |        3 |          0 |     106.0 |      175 |          3 |
+
+### Single-Threaded Throughput (mixed read/write)
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| bdcache    |   75.69M   |   43.02M   |
+| lru        |   36.51M   |   36.91M   |
+| ristretto  |   27.79M   |   13.96M   |
+| otter      |   25.36M   |    7.43M   |
+| freecache  |   13.12M   |   16.20M   |
+| tinylfu    |   11.27M   |    9.07M   |
+
+### Concurrent Throughput (mixed read/write): 4 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| otter      |   29.15M   |    4.33M   |
+| bdcache    |   28.75M   |   30.41M   |
+| ristretto  |   26.98M   |   13.33M   |
+| freecache  |   25.14M   |   21.76M   |
+| lru        |    9.22M   |    9.32M   |
+| tinylfu    |    5.42M   |    4.93M   |
+
+### Concurrent Throughput (mixed read/write): 8 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| bdcache    |   21.98M   |   18.58M   |
+| otter      |   19.51M   |    2.98M   |
+| ristretto  |   18.43M   |   11.15M   |
+| freecache  |   16.79M   |   15.99M   |
+| lru        |    7.72M   |    7.71M   |
+| tinylfu    |    4.88M   |    4.18M   |
+
+### Concurrent Throughput (mixed read/write): 12 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| bdcache    |   23.59M   |   23.84M   |
+| ristretto  |   22.35M   |   11.22M   |
+| otter      |   21.69M   |    2.83M   |
+| freecache  |   16.95M   |   16.43M   |
+| lru        |    7.43M   |    7.44M   |
+| tinylfu    |    4.50M   |    4.07M   |
+
+### Concurrent Throughput (mixed read/write): 16 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| bdcache    |   16.04M   |   15.65M   |
+| otter      |   15.76M   |    2.82M   |
+| ristretto  |   15.36M   |   12.12M   |
+| freecache  |   14.61M   |   14.59M   |
+| lru        |    7.36M   |    7.46M   |
+| tinylfu    |    4.66M   |    3.31M   |
+
+### Concurrent Throughput (mixed read/write): 24 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| otter      |   16.04M   |    2.84M   |
+| bdcache    |   16.04M   |   15.41M   |
+| ristretto  |   16.03M   |   12.90M   |
+| freecache  |   14.62M   |   14.35M   |
+| lru        |    7.52M   |    7.74M   |
+| tinylfu    |    4.95M   |    3.34M   |
+
+### Concurrent Throughput (mixed read/write): 32 threads
+
+| Cache      | Get QPS    | Set QPS    |
+|------------|------------|------------|
+| bdcache    |   16.45M   |   15.37M   |
+| otter      |   15.62M   |    2.84M   |
+| ristretto  |   15.47M   |   13.35M   |
+| freecache  |   14.58M   |   14.29M   |
+| lru        |    7.77M   |    7.92M   |
+| tinylfu    |    5.23M   |    3.50M   |
+```
 
 ## License
 

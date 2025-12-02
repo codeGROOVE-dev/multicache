@@ -273,6 +273,22 @@ func BenchmarkS3FIFO_Get(b *testing.B) {
 	}
 }
 
+func BenchmarkS3FIFO_GetParallel(b *testing.B) {
+	cache := newS3FIFO[int, int](10000)
+	for i := range 10000 {
+		cache.setToMemory(i, i, time.Time{})
+	}
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			cache.getFromMemory(i % 10000)
+			i++
+		}
+	})
+}
+
 func BenchmarkS3FIFO_Mixed(b *testing.B) {
 	cache := newS3FIFO[int, int](10000)
 	b.ResetTimer()

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -409,7 +408,7 @@ type concurrentResult struct {
 }
 
 func runConcurrentBenchmark() {
-	threadCounts := []int{1, 4, 8, runtime.NumCPU()}
+	threadCounts := []int{1, 4, 8, 12, 16, 24, 32}
 	caches := []string{"bdcache", "otter", "ristretto", "tinylfu", "freecache", "lru"}
 
 	for _, threads := range threadCounts {
