@@ -2,7 +2,6 @@
 package benchmarks
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -156,14 +155,13 @@ func generateWorkload(n, keySpace int, alpha float64, seed uint64) []int {
 }
 
 func hitRateBdcache(workload []int, cacheSize int) float64 {
-	ctx := context.Background()
-	cache, _ := bdcache.New[int, int](ctx, bdcache.WithMemorySize(cacheSize))
+	cache := bdcache.Memory[int, int](bdcache.WithSize(cacheSize))
 	var hits int
 	for _, key := range workload {
-		if _, found, _ := cache.Get(ctx, key); found {
+		if _, found := cache.Get(key); found {
 			hits++
 		} else {
-			_ = cache.Set(ctx, key, key, 0)
+			cache.Set(key, key, 0)
 		}
 	}
 	return float64(hits) / float64(len(workload)) * 100
@@ -394,23 +392,21 @@ func measurePerf(name string, getFn, setFn func(b *testing.B)) perfResult {
 }
 
 func benchBdcacheGet(b *testing.B) {
-	ctx := context.Background()
-	cache, _ := bdcache.New[int, int](ctx, bdcache.WithMemorySize(perfCacheSize))
+	cache := bdcache.Memory[int, int](bdcache.WithSize(perfCacheSize))
 	for i := range perfCacheSize {
-		_ = cache.Set(ctx, i, i, 0)
+		cache.Set(i, i, 0)
 	}
 	b.ResetTimer()
 	for i := range b.N {
-		_, _, _ = cache.Get(ctx, i%perfCacheSize)
+		cache.Get(i % perfCacheSize)
 	}
 }
 
 func benchBdcacheSet(b *testing.B) {
-	ctx := context.Background()
-	cache, _ := bdcache.New[int, int](ctx, bdcache.WithMemorySize(perfCacheSize))
+	cache := bdcache.Memory[int, int](bdcache.WithSize(perfCacheSize))
 	b.ResetTimer()
 	for i := range b.N {
-		_ = cache.Set(ctx, i%perfCacheSize, i, 0)
+		cache.Set(i%perfCacheSize, i, 0)
 	}
 }
 
@@ -634,16 +630,15 @@ func printThroughputSummary(results []concurrentResult, metric string, getQPS fu
 
 //nolint:gocognit // benchmark code with repetitive cache setup
 func measureConcurrentQPS(cacheName string, threads int, write bool) float64 {
-	ctx := context.Background()
 	var ops atomic.Int64
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 
 	switch cacheName {
 	case "bdcache":
-		cache, _ := bdcache.New[int, int](ctx, bdcache.WithMemorySize(perfCacheSize))
+		cache := bdcache.Memory[int, int](bdcache.WithSize(perfCacheSize))
 		for i := range perfCacheSize {
-			_ = cache.Set(ctx, i, i, 0)
+			cache.Set(i, i, 0)
 		}
 		for range threads {
 			wg.Add(1)
@@ -655,9 +650,9 @@ func measureConcurrentQPS(cacheName string, threads int, write bool) float64 {
 						return
 					default:
 						if write {
-							_ = cache.Set(ctx, i%perfCacheSize, i, 0)
+							cache.Set(i%perfCacheSize, i, 0)
 						} else {
-							_, _, _ = cache.Get(ctx, i%perfCacheSize)
+							cache.Get(i % perfCacheSize)
 						}
 						ops.Add(1)
 					}

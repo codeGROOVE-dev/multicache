@@ -1,7 +1,6 @@
 package bdcache
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -278,38 +277,28 @@ func BenchmarkS3FIFO_Mixed(b *testing.B) {
 
 // Test S3-FIFO behavior: hot items survive one-hit wonder floods
 func TestS3FIFOBehavior(t *testing.T) {
-	ctx := context.Background()
 	// Use larger capacity for meaningful per-shard sizes with 2048 shards
-	cache, err := New[int, int](ctx, WithMemorySize(10000))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cache := Memory[int, int](WithSize(10000))
 
 	// Insert hot items that will be accessed multiple times
 	for i := range 5000 {
-		if err := cache.Set(ctx, i, i, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i, 0)
 	}
 
 	// Access hot items once (marks them for promotion)
 	for i := range 5000 {
-		if _, _, err := cache.Get(ctx, i); err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
+		cache.Get(i)
 	}
 
 	// Insert one-hit wonders (should be evicted before hot items)
 	for i := 20000; i < 26000; i++ {
-		if err := cache.Set(ctx, i, i, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i, 0)
 	}
 
 	// Check if hot items survived
 	hotItemsFound := 0
 	for i := range 5000 {
-		if _, found, err := cache.Get(ctx, i); err == nil && found {
+		if _, found := cache.Get(i); found {
 			hotItemsFound++
 		}
 	}
@@ -322,37 +311,27 @@ func TestS3FIFOBehavior(t *testing.T) {
 
 // Test eviction order: accessed items survive new insertions
 func TestS3FIFOEvictionOrder(t *testing.T) {
-	ctx := context.Background()
-	cache, err := New[int, int](ctx, WithMemorySize(40))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cache := Memory[int, int](WithSize(40))
 
 	// Fill cache with items
 	for i := range 40 {
-		if err := cache.Set(ctx, i, i, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i, 0)
 	}
 
 	// Access first 20 items (marks them for promotion)
 	for i := range 20 {
-		if _, _, err := cache.Get(ctx, i); err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
+		cache.Get(i)
 	}
 
 	// Insert new items (should evict unaccessed items first)
 	for i := 100; i < 120; i++ {
-		if err := cache.Set(ctx, i, i, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i, 0)
 	}
 
 	// Verify accessed items survived
 	accessedFound := 0
 	for i := range 20 {
-		if _, found, err := cache.Get(ctx, i); err == nil && found {
+		if _, found := cache.Get(i); found {
 			accessedFound++
 		}
 	}
@@ -361,44 +340,34 @@ func TestS3FIFOEvictionOrder(t *testing.T) {
 
 // Test S3-FIFO vs LRU: hot items survive, cold items evicted
 func TestS3FIFODetailed(t *testing.T) {
-	ctx := context.Background()
-	cache, err := New[int, int](ctx, WithMemorySize(40))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cache := Memory[int, int](WithSize(40))
 
 	// Insert items 1-40 into cache
 	for i := 1; i <= 40; i++ {
-		if err := cache.Set(ctx, i, i*100, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i*100, 0)
 	}
 
 	// Access items 1-20 (marks them as hot)
 	for i := 1; i <= 20; i++ {
-		if _, _, err := cache.Get(ctx, i); err != nil {
-			t.Fatalf("Get failed: %v", err)
-		}
+		cache.Get(i)
 	}
 
 	// Insert one-hit wonders 100-119
 	for i := 100; i < 120; i++ {
-		if err := cache.Set(ctx, i, i*100, 0); err != nil {
-			t.Fatalf("Set failed: %v", err)
-		}
+		cache.Set(i, i*100, 0)
 	}
 
 	// Check which items survived
 	hotSurvived := 0
 	for i := 1; i <= 20; i++ {
-		if _, found, err := cache.Get(ctx, i); err == nil && found {
+		if _, found := cache.Get(i); found {
 			hotSurvived++
 		}
 	}
 
 	coldSurvived := 0
 	for i := 21; i <= 40; i++ {
-		if _, found, err := cache.Get(ctx, i); err == nil && found {
+		if _, found := cache.Get(i); found {
 			coldSurvived++
 		}
 	}
