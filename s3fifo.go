@@ -222,7 +222,8 @@ type entry[K comparable, V any] struct {
 }
 
 // newS3FIFO creates a new sharded S3-FIFO cache with the given total capacity.
-func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
+func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
+	capacity := cfg.size
 	if capacity <= 0 {
 		capacity = 16384 // 2^14, divides evenly by 16 shards
 	}
@@ -263,22 +264,22 @@ func newS3FIFO[K comparable, V any](capacity int) *s3fifo[K, V] {
 	}
 
 	for i := range numShards {
-		c.shards[i] = newShard[K, V](shardCap)
+		c.shards[i] = newShard[K, V](shardCap, cfg.smallRatio, cfg.ghostRatio)
 	}
 
 	return c
 }
 
 // newShard creates a new S3-FIFO shard with the given capacity.
-func newShard[K comparable, V any](capacity int) *shard[K, V] {
-	// Small queue: 10% of cache capacity (S3-FIFO paper recommendation).
-	smallCap := capacity / 10
+func newShard[K comparable, V any](capacity int, smallRatio, ghostRatio float64) *shard[K, V] {
+	// Small queue: recommended 10%
+	smallCap := int(float64(capacity) * smallRatio)
 	if smallCap < 1 {
 		smallCap = 1
 	}
 
-	// Ghost queue: 100% of cache capacity to maximize re-admission detection.
-	ghostCap := capacity
+	// Ghost queue: recommended 100%
+	ghostCap := int(float64(capacity) * ghostRatio)
 	if ghostCap < 1 {
 		ghostCap = 1
 	}
@@ -421,13 +422,8 @@ func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
 	// Fast path: try read lock first (optimistic for cache hits)
 	s.mu.RLock()
 	if ent, ok := s.items[key]; ok {
-		// Check expiration
-		if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
-			// Expired - need write lock to update
-			s.mu.RUnlock()
-			// Fall through to slow path
-		} else {
-			// Hit - mark as accessed and return
+		// Check if NOT expired - return early with cache hit
+		if ent.expiryNano == 0 || time.Now().UnixNano() <= ent.expiryNano {
 			if !ent.accessed.Load() {
 				ent.accessed.Store(true)
 			}
@@ -435,6 +431,8 @@ func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
 			s.mu.RUnlock()
 			return v, true
 		}
+		// Expired - need write lock to update, fall through to slow path
+		s.mu.RUnlock()
 	} else {
 		s.mu.RUnlock()
 	}

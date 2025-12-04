@@ -32,7 +32,7 @@ func Memory[K comparable, V any](opts ...Option) *MemoryCache[K, V] {
 	}
 
 	return &MemoryCache[K, V]{
-		memory:     newS3FIFO[K, V](cfg.size),
+		memory:     newS3FIFO[K, V](cfg),
 		defaultTTL: cfg.defaultTTL,
 	}
 }
@@ -133,11 +133,15 @@ type config struct {
 	size       int
 	defaultTTL time.Duration
 	warmup     int
+	smallRatio float64
+	ghostRatio float64
 }
 
 func defaultConfig() *config {
 	return &config{
-		size: 16384, // 2^14, divides evenly by numShards
+		size:       16384, // 2^14, divides evenly by numShards
+		smallRatio: 0.1,   // 10% small queue
+		ghostRatio: 0.5,   // 50% ghost queue
 	}
 }
 
@@ -148,6 +152,22 @@ type Option func(*config)
 func WithSize(n int) Option {
 	return func(c *config) {
 		c.size = n
+	}
+}
+
+// WithSmallRatio sets the ratio of the small queue to the total cache size.
+// Default is 0.1 (10%).
+func WithSmallRatio(r float64) Option {
+	return func(c *config) {
+		c.smallRatio = r
+	}
+}
+
+// WithGhostRatio sets the ratio of the ghost queue to the total cache size.
+// Default is 1.0 (100%).
+func WithGhostRatio(r float64) Option {
+	return func(c *config) {
+		c.ghostRatio = r
 	}
 }
 

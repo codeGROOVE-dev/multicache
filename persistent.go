@@ -48,7 +48,7 @@ func Persistent[K comparable, V any](ctx context.Context, p PersistenceLayer[K, 
 
 	cache := &PersistentCache[K, V]{
 		Store:      p,
-		memory:     newS3FIFO[K, V](cfg.size),
+		memory:     newS3FIFO[K, V](cfg),
 		defaultTTL: cfg.defaultTTL,
 		warmup:     cfg.warmup,
 	}
