@@ -1,4 +1,4 @@
-.PHONY: test lint bench benchmark benchmark-quick benchmark-throughput benchmark-hitrate benchmark-external benchmark-suite clean
+.PHONY: test lint bench benchmark clean
 
 test:
 	@echo "Running tests in all modules..."
@@ -12,33 +12,15 @@ lint:
 bench:
 	go test -bench=. -benchmem
 
-# Run all benchmarks (shortest to longest)
-benchmark: benchmark-quick benchmark-throughput benchmark-external benchmark-hitrate benchmark-suite
-
-# Quick hit ratio comparison for tuning (~3s)
-benchmark-quick:
-	@echo "=== Quick Hit Rate Comparison ==="
-	@cd benchmarks && go test -run=TestQuickHitRate -v
-
-# Parallel throughput benchmarks (~30s)
-benchmark-throughput:
-	@echo "=== Parallel Throughput Benchmarks ==="
-	@cd benchmarks && go test -bench=BenchmarkThroughput -benchmem -cpu=1,4,8,16
-
-# External benchmark comparison (~10s)
-benchmark-external:
-	@echo "=== External Benchmark Comparison (go-cache-benchmark style) ==="
-	@cd benchmarks && go test -run=TestExternalBenchmark -v
-
-# Hit ratio benchmarks with trace patterns (~2min)
-benchmark-hitrate:
-	@echo "=== Trace-Based Hit Ratio Benchmarks ==="
-	@cd benchmarks && go test -run=TestTraceHitRate -v -timeout=900s
-
-# Full benchmark suite (~5min)
-benchmark-suite:
-	@echo "=== Full Benchmark Suite ==="
-	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=900s
+# Run the 5 key benchmarks (~3-5min):
+# 1. Meta Trace Hit Rate (real-world)
+# 2. Zipf Hit Rate (synthetic)
+# 3. Single-Threaded Latency
+# 4. Zipf Throughput (1 thread)
+# 5. Zipf Throughput (16 threads)
+benchmark:
+	@echo "=== bdcache Benchmark Suite ==="
+	@cd benchmarks && go test -run=TestBenchmarkSuite -v -timeout=300s
 
 clean:
 	go clean -testcache

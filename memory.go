@@ -140,8 +140,8 @@ type config struct {
 func defaultConfig() *config {
 	return &config{
 		size:       16384, // 2^14, divides evenly by numShards
-		smallRatio: 0.1,   // 10% small queue
-		ghostRatio: 0.5,   // 50% ghost queue
+		smallRatio: 0.0,   // 0.0 means auto-tune based on capacity
+		ghostRatio: 0.0,   // 0.0 means auto-tune based on capacity
 	}
 }
 

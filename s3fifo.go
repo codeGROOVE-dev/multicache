@@ -216,9 +216,9 @@ type entry[K comparable, V any] struct {
 	value      V
 	prev       *entry[K, V] // Intrusive list pointers
 	next       *entry[K, V]
-	expiryNano int64       // Unix nanoseconds; 0 means no expiry
-	accessed   atomic.Bool // Fast "was accessed" flag for S3-FIFO promotion
-	inSmall    bool        // True if in Small queue, false if in Main
+	expiryNano int64        // Unix nanoseconds; 0 means no expiry
+	freq       atomic.Int32 // Frequency counter for improved S3-FIFO/LFU
+	inSmall    bool         // True if in Small queue, false if in Main
 }
 
 // newS3FIFO creates a new sharded S3-FIFO cache with the given total capacity.
@@ -263,8 +263,27 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		c.keyIsString = true
 	}
 
+	// Auto-tune configuration if not explicitly set
+	smallRatio := cfg.smallRatio
+	if smallRatio <= 0 {
+		if capacity <= 16384 {
+			smallRatio = 0.01 // 1% for small caches (Zipf-friendly)
+		} else {
+			smallRatio = 0.05 // 5% for large caches (Meta trace optimal)
+		}
+	}
+
+	ghostRatio := cfg.ghostRatio
+	if ghostRatio <= 0 {
+		if capacity <= 16384 {
+			ghostRatio = 0.5 // 50% for small caches
+		} else {
+			ghostRatio = 1.0 // 100% for large caches
+		}
+	}
+
 	for i := range numShards {
-		c.shards[i] = newShard[K, V](shardCap, cfg.smallRatio, cfg.ghostRatio)
+		c.shards[i] = newShard[K, V](shardCap, smallRatio, ghostRatio)
 	}
 
 	return c
@@ -311,7 +330,7 @@ func (s *shard[K, V]) putEntry(e *entry[K, V]) {
 	e.key = zeroK
 	e.value = zeroV
 	e.expiryNano = 0
-	e.accessed.Store(false)
+	e.freq.Store(0)
 	e.inSmall = false
 	e.prev = nil
 
@@ -404,9 +423,9 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 	}
 
 	// S3-FIFO: Mark as accessed for lazy promotion.
-	// Fast path: skip atomic store if already marked (avoids cache line invalidation).
-	if !ent.accessed.Load() {
-		ent.accessed.Store(true)
+	// Fast path: check if already at max freq
+	if f := ent.freq.Load(); f < 3 {
+		ent.freq.Store(f + 1)
 	}
 
 	return ent.value, true
@@ -424,8 +443,8 @@ func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
 	if ent, ok := s.items[key]; ok {
 		// Check if NOT expired - return early with cache hit
 		if ent.expiryNano == 0 || time.Now().UnixNano() <= ent.expiryNano {
-			if !ent.accessed.Load() {
-				ent.accessed.Store(true)
+			if f := ent.freq.Load(); f < 3 {
+				ent.freq.Store(f + 1)
 			}
 			v := ent.value
 			s.mu.RUnlock()
@@ -451,8 +470,8 @@ func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
 			return value, false
 		}
 		// Another goroutine inserted it - return existing value
-		if !ent.accessed.Load() {
-			ent.accessed.Store(true)
+		if f := ent.freq.Load(); f < 3 {
+			ent.freq.Store(f + 1)
 		}
 		v := ent.value
 		s.mu.Unlock()
@@ -567,7 +586,7 @@ func (s *shard[K, V]) delete(key K) {
 
 // evict removes one item according to S3-FIFO algorithm.
 func (s *shard[K, V]) evict() {
-	if s.small.len > 0 {
+	if s.small.len >= s.smallCap {
 		s.evictFromSmall()
 		return
 	}
@@ -581,7 +600,7 @@ func (s *shard[K, V]) evictFromSmall() {
 		s.small.remove(ent)
 
 		// Check if accessed since last eviction attempt
-		if !ent.accessed.Swap(false) {
+		if ent.freq.Load() == 0 {
 			// Not accessed - evict and track in ghost
 			delete(s.items, ent.key)
 			s.addToGhost(ent.key)
@@ -590,6 +609,8 @@ func (s *shard[K, V]) evictFromSmall() {
 		}
 
 		// Accessed - promote to Main queue
+		// Reset frequency per S3-FIFO paper: item must prove itself in Main
+		ent.freq.Store(0)
 		ent.inSmall = false
 		s.main.pushBack(ent)
 	}
@@ -602,7 +623,8 @@ func (s *shard[K, V]) evictFromMain() {
 		s.main.remove(ent)
 
 		// Check if accessed since last eviction attempt
-		if !ent.accessed.Swap(false) {
+		f := ent.freq.Load()
+		if f == 0 {
 			// Not accessed - evict
 			delete(s.items, ent.key)
 			s.putEntry(ent)
@@ -610,6 +632,8 @@ func (s *shard[K, V]) evictFromMain() {
 		}
 
 		// Accessed - give second chance (FIFO-Reinsertion)
+		// Decrement frequency
+		ent.freq.Store(f - 1)
 		s.main.pushBack(ent)
 	}
 }

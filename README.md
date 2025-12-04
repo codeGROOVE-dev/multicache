@@ -16,7 +16,7 @@ Designed originally for persistently caching HTTP fetches in unreliable environm
 
 - **Faster than a bat out of hell** - Best-in-class latency and throughput
 - **S3-FIFO eviction** - Better hit-rates than LRU ([learn more](https://s3fifo.com/))
-- **Pluggable persistence** - Bring your own database or use built-in backends:
+- **L2 Persistence (optional)** - Bring your own database or use built-in backends:
   - [`persist/localfs`](persist/localfs) - Local files (gob encoding, zero dependencies)
   - [`persist/datastore`](persist/datastore) - Google Cloud Datastore
   - [`persist/valkey`](persist/valkey) - Valkey/Redis
