@@ -3,6 +3,7 @@ package bdcache
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -181,9 +182,9 @@ func (c *PersistentCache[K, V]) Set(ctx context.Context, key K, value V, ttl ...
 // SetAsync stores a value in the cache, handling persistence asynchronously.
 // If no TTL is provided, the default TTL is used.
 // Key validation and in-memory caching happen synchronously.
-// Returns a channel that will receive any persistence error (or be closed on success).
+// Persistence errors are logged but not returned (fire-and-forget).
 // Returns an error only for validation failures (e.g., invalid key format).
-func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ...time.Duration) (<-chan error, error) {
+func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ...time.Duration) error {
 	var t time.Duration
 	if len(ttl) > 0 {
 		t = ttl[0]
@@ -192,24 +193,23 @@ func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, tt
 
 	// Validate key early (synchronous)
 	if err := c.Store.ValidateKey(key); err != nil {
-		return nil, err
+		return err
 	}
 
 	// ALWAYS update memory first - reliability guarantee (synchronous)
 	c.memory.setToMemory(key, value, timeToNano(expiry))
 
-	// Update persistence asynchronously
-	errCh := make(chan error, 1)
+	// Update persistence asynchronously (fire-and-forget)
+	//nolint:contextcheck // Intentionally detached - persistence should complete even if caller cancels
 	go func() {
-		defer close(errCh)
-		storeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		storeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := c.Store.Store(storeCtx, key, value, expiry); err != nil {
-			errCh <- fmt.Errorf("async persistence: %w", err)
+			slog.Error("async persistence failed", "key", key, "error", err)
 		}
 	}()
 
-	return errCh, nil
+	return nil
 }
 
 // Delete removes a value from the cache.

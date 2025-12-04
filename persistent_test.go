@@ -303,8 +303,7 @@ func TestPersistentCache_SetAsync(t *testing.T) {
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
 	// SetAsync should not block but value should be available immediately
-	errCh, err := cache.SetAsync(ctx, "key1", 42, 0)
-	if err != nil {
+	if err := cache.SetAsync(ctx, "key1", 42, 0); err != nil {
 		t.Fatalf("SetAsync: %v", err)
 	}
 
@@ -317,10 +316,8 @@ func TestPersistentCache_SetAsync(t *testing.T) {
 		t.Error("key1 should be available immediately after SetAsync")
 	}
 
-	// Wait for async persistence to complete
-	if err := <-errCh; err != nil {
-		t.Fatalf("SetAsync persistence: %v", err)
-	}
+	// Give async persistence time to complete
+	time.Sleep(50 * time.Millisecond)
 
 	// Should also be persisted
 	val, _, found, err = store.Load(ctx, "key1")
@@ -377,10 +374,9 @@ func TestPersistentCache_Errors(t *testing.T) {
 		t.Error("key1 should be in memory even though persistence failed")
 	}
 
-	// SetAsync returns error channel for persistence errors
+	// SetAsync logs persistence errors but doesn't return them
 	store.failSet = true
-	errCh, err := cache.SetAsync(ctx, "key3", 300, 0)
-	if err != nil {
+	if err := cache.SetAsync(ctx, "key3", 300, 0); err != nil {
 		t.Fatalf("SetAsync should not fail synchronously: %v", err)
 	}
 
@@ -393,10 +389,8 @@ func TestPersistentCache_Errors(t *testing.T) {
 		t.Error("key3 should be in memory after SetAsync")
 	}
 
-	// Persistence error should come through the channel
-	if err := <-errCh; err == nil {
-		t.Error("SetAsync should report persistence error through channel")
-	}
+	// Give async persistence time to attempt (and fail with logged error)
+	time.Sleep(50 * time.Millisecond)
 
 	// Get should work from memory even if persistence fails
 	store.failGet = true
@@ -868,23 +862,13 @@ func TestPersistentCache_SetAsync_VariadicTTL(t *testing.T) {
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
 	// SetAsync without TTL - uses default
-	errCh1, err := cache.SetAsync(ctx, "async-default", 1)
-	if err != nil {
+	if err := cache.SetAsync(ctx, "async-default", 1); err != nil {
 		t.Fatalf("SetAsync: %v", err)
 	}
 
 	// SetAsync with explicit TTL
-	errCh2, err := cache.SetAsync(ctx, "async-explicit", 2, 5*time.Minute)
-	if err != nil {
+	if err := cache.SetAsync(ctx, "async-explicit", 2, 5*time.Minute); err != nil {
 		t.Fatalf("SetAsync: %v", err)
-	}
-
-	// Wait for persistence
-	if err := <-errCh1; err != nil {
-		t.Fatalf("SetAsync persistence: %v", err)
-	}
-	if err := <-errCh2; err != nil {
-		t.Fatalf("SetAsync persistence: %v", err)
 	}
 
 	// Both should be in memory immediately
