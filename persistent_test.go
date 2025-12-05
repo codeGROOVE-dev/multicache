@@ -188,13 +188,13 @@ func (m *mockStore[K, V]) Close() error {
 	return nil
 }
 
-func TestPersistentCache_Basic(t *testing.T) {
+func TestTieredCache_Basic(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -229,16 +229,16 @@ func TestPersistentCache_Basic(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_GetFromPersistence(t *testing.T) {
+func TestTieredCache_GetFromPersistence(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
 	// Pre-populate persistence
 	_ = store.Set(ctx, "key1", 42, time.Time{}) //nolint:errcheck // Test fixture
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -255,16 +255,60 @@ func TestPersistentCache_GetFromPersistence(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_GetFromPersistenceExpired(t *testing.T) {
+func TestTieredCache_PromotesToMemory(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore[string, int]()
+
+	// Pre-populate persistence only (not memory)
+	_ = store.Set(ctx, "key1", 42, time.Time{}) //nolint:errcheck // Test fixture
+
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	// Memory should be empty initially
+	if cache.Len() != 0 {
+		t.Errorf("initial memory cache length = %d; want 0", cache.Len())
+	}
+
+	// First Get: should load from persistence
+	val, found, err := cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found || val != 42 {
+		t.Error("key1 should be found from persistence")
+	}
+
+	// Memory should now have the entry (promoted)
+	if cache.Len() != 1 {
+		t.Errorf("memory cache length after Get = %d; want 1 (should be promoted)", cache.Len())
+	}
+
+	// Make persistence fail - subsequent Get should still work from memory
+	store.setFailGet(true)
+
+	val, found, err = cache.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get from memory: %v", err)
+	}
+	if !found || val != 42 {
+		t.Error("key1 should be found from memory (promoted from persistence)")
+	}
+}
+
+func TestTieredCache_GetFromPersistenceExpired(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
 	// Pre-populate with expired entry
 	_ = store.Set(ctx, "key1", 42, time.Now().Add(-1*time.Hour)) //nolint:errcheck // Test fixture
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -278,41 +322,13 @@ func TestPersistentCache_GetFromPersistenceExpired(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_WithWarmup(t *testing.T) {
+func TestTieredCache_SetAsync(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	// Pre-populate persistence with 10 items
-	for i := range 10 {
-		_ = store.Set(ctx, fmt.Sprintf("key%d", i), i, time.Time{}) //nolint:errcheck // Test fixture
-	}
-
-	// Create cache with warmup limit of 5
-	cache, err := Persistent[string, int](ctx, store, WithWarmup(5))
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	// Give warmup goroutine time to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Cache should have warmed up with some items (exact count depends on iteration order)
-	if cache.Len() == 0 {
-		t.Error("cache should have warmed up with items from persistence")
-	}
-	if cache.Len() > 5 {
-		t.Errorf("cache length = %d; should not exceed warmup limit of 5", cache.Len())
-	}
-}
-
-func TestPersistentCache_SetAsync(t *testing.T) {
-	ctx := context.Background()
-	store := newMockStore[string, int]()
-
-	cache, err := Persistent[string, int](ctx, store)
-	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -343,13 +359,12 @@ func TestPersistentCache_SetAsync(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Close(t *testing.T) {
-	ctx := context.Background()
+func TestTieredCache_Close(t *testing.T) {
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 
 	// Close should close the store
@@ -362,13 +377,13 @@ func TestPersistentCache_Close(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Errors(t *testing.T) {
+func TestTieredCache_Errors(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -421,13 +436,13 @@ func TestPersistentCache_Errors(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Delete_Errors(t *testing.T) {
+func TestTieredCache_Delete_Errors(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -472,13 +487,13 @@ func TestPersistentCache_Delete_Errors(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Get_InvalidKey(t *testing.T) {
+func TestTieredCache_Get_InvalidKey(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -492,13 +507,13 @@ func TestPersistentCache_Get_InvalidKey(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Get_PersistenceLoadError(t *testing.T) {
+func TestTieredCache_Get_PersistenceLoadError(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -518,13 +533,12 @@ func TestPersistentCache_Get_PersistenceLoadError(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Close_PersistenceError(t *testing.T) {
-	ctx := context.Background()
+func TestTieredCache_Close_PersistenceError(t *testing.T) {
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 
 	// Make store.Close() fail
@@ -537,13 +551,13 @@ func TestPersistentCache_Close_PersistenceError(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_Flush(t *testing.T) {
+func TestTieredCache_Flush(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -600,13 +614,13 @@ func TestPersistentCache_Flush(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_StoreAccess(t *testing.T) {
+func TestTieredCache_StoreAccess(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store)
+	cache, err := NewTiered[string, int](store)
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -650,14 +664,13 @@ func TestPersistentCache_StoreAccess(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_WithOptions(t *testing.T) {
-	ctx := context.Background()
+func TestTieredCache_WithOptions(t *testing.T) {
 	store := newMockStore[string, int]()
 
-	// Test WithSize
-	cache, err := Persistent[string, int](ctx, store, WithSize(500))
+	// Test Size
+	cache, err := NewTiered[string, int](store, Size(500))
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	if cache.memory == nil {
 		t.Error("memory should be initialized")
@@ -668,9 +681,9 @@ func TestPersistentCache_WithOptions(t *testing.T) {
 	store = newMockStore[string, int]()
 
 	// Test WithTTL
-	cache, err = Persistent[string, int](ctx, store, WithTTL(5*time.Minute))
+	cache, err = NewTiered[string, int](store, TTL(5*time.Minute))
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	if cache.defaultTTL != 5*time.Minute {
 		t.Errorf("default TTL = %v; want 5m", cache.defaultTTL)
@@ -678,145 +691,13 @@ func TestPersistentCache_WithOptions(t *testing.T) {
 	_ = cache.Close() //nolint:errcheck // Test cleanup
 }
 
-func TestPersistentCache_GetOrSet(t *testing.T) {
+func TestTieredCache_Set_VariadicTTL(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store, WithTTL(time.Hour))
+	cache, err := NewTiered[string, int](store, TTL(time.Hour))
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	loadCount := 0
-	loader := func(ctx context.Context) (int, error) {
-		loadCount++
-		return 42, nil
-	}
-
-	// First call should invoke loader
-	val, err := cache.GetOrSet(ctx, "key1", loader)
-	if err != nil {
-		t.Fatalf("GetOrSet: %v", err)
-	}
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 1 {
-		t.Errorf("loader called %d times; want 1", loadCount)
-	}
-
-	// Second call should return cached value without invoking loader
-	val, err = cache.GetOrSet(ctx, "key1", loader)
-	if err != nil {
-		t.Fatalf("GetOrSet: %v", err)
-	}
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 1 {
-		t.Errorf("loader called %d times; want 1 (should use cached)", loadCount)
-	}
-
-	// Different key should invoke loader again
-	val, err = cache.GetOrSet(ctx, "key2", loader)
-	if err != nil {
-		t.Fatalf("GetOrSet: %v", err)
-	}
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 2 {
-		t.Errorf("loader called %d times; want 2", loadCount)
-	}
-
-	// Value should be persisted
-	persistedVal, _, found, err := store.Get(ctx, "key1")
-	if err != nil {
-		t.Fatalf("store.Get: %v", err)
-	}
-	if !found || persistedVal != 42 {
-		t.Error("key1 should be persisted")
-	}
-}
-
-func TestPersistentCache_GetOrSet_LoaderError(t *testing.T) {
-	ctx := context.Background()
-	store := newMockStore[string, int]()
-
-	cache, err := Persistent[string, int](ctx, store)
-	if err != nil {
-		t.Fatalf("Persistent: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	loader := func(ctx context.Context) (int, error) {
-		return 0, fmt.Errorf("loader error")
-	}
-
-	// GetOrSet should propagate loader error
-	_, err = cache.GetOrSet(ctx, "key1", loader)
-	if err == nil {
-		t.Error("GetOrSet should return error when loader fails")
-	}
-
-	// Key should not be in cache
-	_, found, err := cache.Get(ctx, "key1")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if found {
-		t.Error("key1 should not be cached when loader fails")
-	}
-}
-
-func TestPersistentCache_GetOrSet_WithExplicitTTL(t *testing.T) {
-	ctx := context.Background()
-	store := newMockStore[string, int]()
-
-	cache, err := Persistent[string, int](ctx, store)
-	if err != nil {
-		t.Fatalf("Persistent: %v", err)
-	}
-	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
-
-	loader := func(ctx context.Context) (int, error) { return 100, nil }
-
-	// GetOrSet with explicit short TTL
-	val, err := cache.GetOrSet(ctx, "temp", loader, 50*time.Millisecond)
-	if err != nil {
-		t.Fatalf("GetOrSet: %v", err)
-	}
-	if val != 100 {
-		t.Errorf("GetOrSet value = %d; want 100", val)
-	}
-
-	// Should be available immediately
-	val, found, err := cache.Get(ctx, "temp")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !found || val != 100 {
-		t.Error("temp should be found immediately")
-	}
-
-	// Wait for expiration
-	time.Sleep(100 * time.Millisecond)
-
-	// Should be expired in memory (may still be found from persistence)
-	_, _, err = cache.Get(ctx, "temp")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-}
-
-func TestPersistentCache_Set_VariadicTTL(t *testing.T) {
-	ctx := context.Background()
-	store := newMockStore[string, int]()
-
-	cache, err := Persistent[string, int](ctx, store, WithTTL(time.Hour))
-	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -865,13 +746,13 @@ func TestPersistentCache_Set_VariadicTTL(t *testing.T) {
 	}
 }
 
-func TestPersistentCache_SetAsync_VariadicTTL(t *testing.T) {
+func TestTieredCache_SetAsync_VariadicTTL(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
 
-	cache, err := Persistent[string, int](ctx, store, WithTTL(time.Hour))
+	cache, err := NewTiered[string, int](store, TTL(time.Hour))
 	if err != nil {
-		t.Fatalf("Persistent: %v", err)
+		t.Fatalf("NewTiered: %v", err)
 	}
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
@@ -918,5 +799,203 @@ func TestPersistentCache_SetAsync_VariadicTTL(t *testing.T) {
 	}
 	if !found {
 		t.Error("async-explicit should be persisted")
+	}
+}
+
+func TestTieredCache_Concurrent(t *testing.T) {
+	store := newMockStore[int, int]()
+
+	cache, err := NewTiered[int, int](store, Size(1000))
+	if err != nil {
+		t.Fatalf("NewTiered: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	// Concurrent writers
+	for i := range 10 {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			for j := range 100 {
+				_ = cache.Set(ctx, offset*100+j, j, 0) //nolint:errcheck // Test concurrent access
+			}
+		}(i)
+	}
+
+	// Concurrent readers
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 100 {
+				_, _, _ = cache.Get(ctx, j) //nolint:errcheck // Test concurrent access
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Cache should be functional after concurrent access
+	if err := cache.Set(ctx, 9999, 9999, 0); err != nil {
+		t.Errorf("Set after concurrent access failed: %v", err)
+	}
+	val, found, err := cache.Get(ctx, 9999)
+	if err != nil || !found || val != 9999 {
+		t.Errorf("Get after concurrent access: val=%d, found=%v, err=%v", val, found, err)
+	}
+}
+
+func TestTieredCache_Set_KeyValidationError(t *testing.T) {
+	store := &validatingMockStore[string, int]{
+		mockStore: newMockStore[string, int](),
+	}
+
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+
+	// Set with invalid key should return error
+	err = cache.Set(ctx, "invalid/key", 42, 0)
+	if err == nil {
+		t.Error("Set with invalid key should return error")
+	}
+
+	// Value should NOT be in memory (validation happens before memory write)
+	if cache.Len() != 0 {
+		t.Errorf("memory cache should be empty after validation error, got %d", cache.Len())
+	}
+}
+
+func TestTieredCache_SetAsync_KeyValidationError(t *testing.T) {
+	store := &validatingMockStore[string, int]{
+		mockStore: newMockStore[string, int](),
+	}
+
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+
+	// SetAsync with invalid key should return error synchronously
+	err = cache.SetAsync(ctx, "invalid/key", 42, 0)
+	if err == nil {
+		t.Error("SetAsync with invalid key should return error")
+	}
+
+	// Value should NOT be in memory
+	if cache.Len() != 0 {
+		t.Errorf("memory cache should be empty after validation error, got %d", cache.Len())
+	}
+}
+
+// validatingMockStore wraps mockStore but rejects keys containing "/"
+type validatingMockStore[K comparable, V any] struct {
+	*mockStore[K, V]
+}
+
+func (m *validatingMockStore[K, V]) ValidateKey(key K) error {
+	keyStr := fmt.Sprintf("%v", key)
+	for _, c := range keyStr {
+		if c == '/' {
+			return fmt.Errorf("invalid key: contains /")
+		}
+	}
+	return nil
+}
+
+func TestNewTiered_NilStore(t *testing.T) {
+	// NewTiered with nil store should return error
+	_, err := NewTiered[string, int](nil)
+	if err == nil {
+		t.Error("NewTiered with nil store should return error")
+	}
+	if err != nil && err.Error() != "store cannot be nil" {
+		t.Errorf("NewTiered error = %q; want 'store cannot be nil'", err.Error())
+	}
+}
+
+func TestNew_InvalidSize(t *testing.T) {
+	// Size(0) should fallback to default
+	cache := New[string, int](Size(0))
+	defer cache.Close()
+
+	// Verify it works
+	cache.Set("key", 1)
+	if val, ok := cache.Get("key"); !ok || val != 1 {
+		t.Error("Cache with Size(0) should work (fallback to default)")
+	}
+
+	// Size(-10) should fallback to default
+	cache2 := New[string, int](Size(-10))
+	defer cache2.Close()
+	cache2.Set("key", 1)
+	if val, ok := cache2.Get("key"); !ok || val != 1 {
+		t.Error("Cache with Size(-10) should work (fallback to default)")
+	}
+}
+
+func TestNew_TTL_Behavior(t *testing.T) {
+	// Test that TTL option is correctly applied as default
+	defaultTTL := 100 * time.Millisecond
+	cache := New[string, int](TTL(defaultTTL))
+	defer cache.Close()
+
+	// Set without explicit TTL -> uses default
+	cache.Set("default", 1)
+
+	// Set with explicit TTL -> overrides default
+	cache.Set("longer", 2, 1*time.Hour)
+
+	// Wait for default to expire
+	time.Sleep(defaultTTL + 10*time.Millisecond)
+
+	if _, ok := cache.Get("default"); ok {
+		t.Error("Item with default TTL should have expired")
+	}
+	if _, ok := cache.Get("longer"); !ok {
+		t.Error("Item with explicit longer TTL should still exist")
+	}
+}
+
+func TestNewTiered_WithTTL_Behavior(t *testing.T) {
+	store := newMockStore[string, int]()
+	defaultTTL := 100 * time.Millisecond
+	cache, err := NewTiered[string, int](store, TTL(defaultTTL))
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+
+	ctx := context.Background()
+
+	// Note: Set requires Context for persistence.
+	// However, we are testing that the TTL is passed to memory correctly.
+	// Memory expiration is lazy on Get or handled by internal logic, but here we just check availability.
+
+	// Set without explicit TTL -> uses default
+	_ = cache.Set(ctx, "default", 1)
+
+	// Set with explicit TTL -> overrides default
+	_ = cache.Set(ctx, "longer", 2, 1*time.Hour)
+
+	// Wait for default to expire
+	time.Sleep(defaultTTL + 10*time.Millisecond)
+
+	// Check memory first (using Get)
+	if _, ok := cache.memory.get("default"); ok {
+		t.Error("Item with default TTL should have expired in memory")
+	}
+	if _, ok := cache.memory.get("longer"); !ok {
+		t.Error("Item with explicit longer TTL should still exist in memory")
 	}
 }

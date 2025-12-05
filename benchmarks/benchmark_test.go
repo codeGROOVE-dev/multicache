@@ -3,9 +3,10 @@ package benchmarks
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"math"
-	"math/rand/v2"
+	"os"
+	"os/exec"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codeGROOVE-dev/sfcache"
+	"github.com/codeGROOVE-dev/sfcache/benchmarks/pkg/workload"
 	"github.com/coocood/freecache"
 	"github.com/dgraph-io/ristretto"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -23,6 +25,13 @@ import (
 // =============================================================================
 // Full Benchmark Suite
 // =============================================================================
+
+func TestMemoryOverhead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping memory benchmark in short mode")
+	}
+	runMemoryBenchmark(t)
+}
 
 // TestBenchmarkSuite runs the 5 key benchmarks for tracking sfcache performance.
 // Run with: go test -run=TestBenchmarkSuite -v
@@ -54,6 +63,10 @@ func TestBenchmarkSuite(t *testing.T) {
 	// 5. Synthetic hit rate with Zipf distribution
 	printTestHeader("TestHitRate", "Zipf Hit Rate")
 	runHitRateBenchmark()
+
+	// 6. Memory Overhead
+	printTestHeader("TestMemoryOverhead", "Memory Usage (10k items, 1KB values)")
+	runMemoryBenchmark(t)
 }
 
 func printTestHeader(testName, description string) {
@@ -125,7 +138,7 @@ func runHitRateBenchmark() {
 	fmt.Println("| Cache         | Size=1% | Size=2.5% | Size=5% |")
 	fmt.Println("|---------------|---------|-----------|---------|")
 
-	workload := generateWorkload(hitRateWorkload, hitRateKeySpace, hitRateAlpha, 42)
+	workload := workload.GenerateZipfInt(hitRateWorkload, hitRateKeySpace, hitRateAlpha, 42)
 	cacheSizes := []int{10000, 25000, 50000}
 
 	caches := []struct {
@@ -198,52 +211,8 @@ func printHitRateSummary(results []hitRateResult) {
 	}
 }
 
-func generateWorkload(n, keySpace int, theta float64, seed uint64) []int {
-	rng := rand.New(rand.NewPCG(seed, seed+1))
-	keys := make([]int, n)
-
-	// Use YCSB-style Zipf distribution (matches CockroachDB/go-cache-benchmark exactly)
-	// The external benchmark uses iMin=0, iMax=keySpace, so spread = iMax+1-iMin = keySpace+1
-	spread := keySpace + 1
-
-	// Precompute zeta values using spread (not keySpace)
-	zeta2 := computeZeta(2, theta)
-	zetaN := computeZeta(uint64(spread), theta)
-	alpha := 1.0 / (1.0 - theta)
-	eta := (1 - math.Pow(2.0/float64(spread), 1.0-theta)) / (1.0 - zeta2/zetaN)
-	halfPowTheta := 1.0 + math.Pow(0.5, theta)
-
-	for i := range n {
-		u := rng.Float64()
-		uz := u * zetaN
-		var result int
-		switch {
-		case uz < 1.0:
-			result = 0
-		case uz < halfPowTheta:
-			result = 1
-		default:
-			result = int(float64(spread) * math.Pow(eta*u-eta+1.0, alpha))
-		}
-		if result >= keySpace {
-			result = keySpace - 1
-		}
-		keys[i] = result
-	}
-	return keys
-}
-
-// computeZeta calculates zeta(n, theta) = sum(1/i^theta) for i=1 to n
-func computeZeta(n uint64, theta float64) float64 {
-	sum := 0.0
-	for i := uint64(1); i <= n; i++ {
-		sum += 1.0 / math.Pow(float64(i), theta)
-	}
-	return sum
-}
-
 func hitRateSFCache(workload []int, cacheSize int) float64 {
-	cache := sfcache.Memory[int, int](sfcache.WithSize(cacheSize))
+	cache := sfcache.New[int, int](sfcache.Size(cacheSize))
 	var hits int
 	for _, key := range workload {
 		if _, found := cache.Get(key); found {
@@ -443,7 +412,7 @@ func measurePerf(name string, getFn, setFn func(b *testing.B)) perfResult {
 }
 
 func benchSFCacheGet(b *testing.B) {
-	cache := sfcache.Memory[int, int](sfcache.WithSize(perfCacheSize))
+	cache := sfcache.New[int, int](sfcache.Size(perfCacheSize))
 	for i := range perfCacheSize {
 		cache.Set(i, i)
 	}
@@ -454,7 +423,7 @@ func benchSFCacheGet(b *testing.B) {
 }
 
 func benchSFCacheSet(b *testing.B) {
-	cache := sfcache.Memory[int, int](sfcache.WithSize(perfCacheSize))
+	cache := sfcache.New[int, int](sfcache.Size(perfCacheSize))
 	b.ResetTimer()
 	for i := range b.N {
 		cache.Set(i%perfCacheSize, i)
@@ -636,7 +605,7 @@ const (
 
 func runZipfThroughputBenchmark(threads int) {
 	// Generate Zipf workload once for all caches
-	workload := generateWorkload(zipfWorkloadSize, perfCacheSize, zipfAlpha, 42)
+	workload := workload.GenerateZipfInt(zipfWorkloadSize, perfCacheSize, zipfAlpha, 42)
 
 	caches := []string{"sfcache", "otter", "ristretto", "tinylfu", "freecache", "lru"}
 
@@ -681,7 +650,7 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 
 	switch cacheName {
 	case "sfcache":
-		cache := sfcache.Memory[int, int](sfcache.WithSize(perfCacheSize))
+		cache := sfcache.New[int, int](sfcache.Size(perfCacheSize))
 		for i := range perfCacheSize {
 			cache.Set(i, i)
 		}
@@ -866,3 +835,171 @@ func measureZipfQPS(cacheName string, threads int, workload []int) float64 {
 
 	return float64(ops.Load()) / concurrentDuration.Seconds()
 }
+
+// =============================================================================
+
+// Memory Overhead Implementation
+
+// =============================================================================
+
+// =============================================================================
+
+// Memory Overhead Implementation (External Process)
+
+// =============================================================================
+
+type runnerOutput struct {
+	Name string `json:"name"`
+
+	Items int `json:"items"`
+
+	Bytes uint64 `json:"bytes"`
+}
+
+func runMemoryBenchmark(t *testing.T) {
+
+	fmt.Println()
+
+	fmt.Println("### Memory Usage (32k cap, 32k unique items, 1KB values) - Isolated Processes")
+
+	fmt.Println("    Workload: Repeated Access to force admission and fill capacity")
+
+	fmt.Println()
+
+	fmt.Println("| Cache         | Items Stored | Memory (MB) | Overhead vs Map (bytes/item) |")
+
+	fmt.Println("|---------------|--------------|-------------|------------------------------|")
+
+
+
+
+
+
+
+	caches := []string{"mem_sfcache", "mem_otter", "mem_ristretto", "mem_tinylfu", "mem_freecache", "mem_lru"}
+
+	results := make([]runnerOutput, len(caches))
+
+
+
+	for i, name := range caches {
+
+		results[i] = buildAndRun(t, name)
+
+	}
+
+
+
+	// Sort by memory usage ascending
+
+	for i := range len(results) - 1 {
+
+		for j := i + 1; j < len(results); j++ {
+
+			if results[j].Bytes < results[i].Bytes {
+
+				results[i], results[j] = results[j], results[i]
+
+			}
+
+		}
+
+	}
+
+
+
+	for _, r := range results {
+
+		// Run baseline with exact same number of items for fair comparison
+
+		baseline := buildAndRun(t, "mem_baseline", "-target", strconv.Itoa(r.Items))
+
+
+
+		// Calculate overhead relative to baseline
+
+		diff := int64(r.Bytes) - int64(baseline.Bytes)
+
+
+
+		var overheadPerItem int64
+
+		if r.Items > 0 {
+
+			overheadPerItem = diff / int64(r.Items)
+
+		}
+
+
+
+		mb := float64(r.Bytes) / 1024 / 1024
+
+
+
+		fmt.Printf("| %s | %12d | %8.2f MB | %28d |\n",
+
+			formatCacheName(r.Name), r.Items, mb, overheadPerItem)
+
+	}
+
+	fmt.Println()
+
+}
+
+
+
+func buildAndRun(t *testing.T, cmdDir string, args ...string) runnerOutput {
+
+	// Binary name = cmdDir (e.g., mem_sfcache)
+
+	binName := "./" + cmdDir + ".bin"
+
+	srcDir := "./cmd/" + cmdDir
+
+
+
+	// Build
+
+	buildCmd := exec.Command("go", "build", "-o", binName, srcDir)
+
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+
+		t.Fatalf("failed to build %s: %v\n%s", srcDir, err, out)
+
+	}
+
+	defer os.Remove(binName)
+
+
+
+	// Run
+
+	runArgs := append([]string{"-iter", "250000", "-cap", "32768"}, args...)
+
+	runCmd := exec.Command(binName, runArgs...)
+
+	out, err := runCmd.CombinedOutput()
+
+
+
+	if err != nil {
+
+		t.Fatalf("failed to run %s: %v\nOutput: %s", binName, err, out)
+
+	}
+
+
+
+	var res runnerOutput
+
+	if err := json.Unmarshal(out, &res); err != nil {
+
+		t.Fatalf("failed to parse output for %s: %v\nOutput: %s", binName, err, out)
+
+	}
+
+	return res
+
+}
+
+

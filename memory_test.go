@@ -8,7 +8,7 @@ import (
 )
 
 func TestMemoryCache_Basic(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Test Set and Get
@@ -38,7 +38,7 @@ func TestMemoryCache_Basic(t *testing.T) {
 }
 
 func TestMemoryCache_WithTTL(t *testing.T) {
-	cache := Memory[string, string]()
+	cache := New[string, string]()
 	defer cache.Close()
 
 	// Set with short TTL
@@ -61,7 +61,7 @@ func TestMemoryCache_WithTTL(t *testing.T) {
 }
 
 func TestMemoryCache_DefaultTTL(t *testing.T) {
-	cache := Memory[string, int](WithTTL(50 * time.Millisecond))
+	cache := New[string, int](TTL(50 * time.Millisecond))
 	defer cache.Close()
 
 	// Set without explicit TTL (ttl=0 uses default)
@@ -84,7 +84,7 @@ func TestMemoryCache_DefaultTTL(t *testing.T) {
 }
 
 func TestMemoryCache_Concurrent(t *testing.T) {
-	cache := Memory[int, int](WithSize(1000))
+	cache := New[int, int](Size(1000))
 	defer cache.Close()
 
 	var wg sync.WaitGroup
@@ -120,7 +120,7 @@ func TestMemoryCache_Concurrent(t *testing.T) {
 }
 
 func TestMemoryCache_Len(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	if cache.Len() != 0 {
@@ -143,7 +143,7 @@ func TestMemoryCache_Len(t *testing.T) {
 }
 
 func BenchmarkMemoryCache_Set(b *testing.B) {
-	cache := Memory[int, int]()
+	cache := New[int, int]()
 	defer cache.Close()
 
 	b.ResetTimer()
@@ -153,7 +153,7 @@ func BenchmarkMemoryCache_Set(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_Get_Hit(b *testing.B) {
-	cache := Memory[int, int]()
+	cache := New[int, int]()
 	defer cache.Close()
 
 	// Populate cache
@@ -168,7 +168,7 @@ func BenchmarkMemoryCache_Get_Hit(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_Get_Miss(b *testing.B) {
-	cache := Memory[int, int]()
+	cache := New[int, int]()
 	defer cache.Close()
 
 	b.ResetTimer()
@@ -178,7 +178,7 @@ func BenchmarkMemoryCache_Get_Miss(b *testing.B) {
 }
 
 func BenchmarkMemoryCache_Mixed(b *testing.B) {
-	cache := Memory[int, int]()
+	cache := New[int, int]()
 	defer cache.Close()
 
 	b.ResetTimer()
@@ -192,15 +192,15 @@ func BenchmarkMemoryCache_Mixed(b *testing.B) {
 }
 
 func TestMemoryCache_WithOptions(t *testing.T) {
-	// Test WithSize
-	cache := Memory[string, int](WithSize(500))
+	// Test Size
+	cache := New[string, int](Size(500))
 	if cache.memory == nil {
 		t.Error("memory should be initialized")
 	}
 	cache.Close()
 
-	// Test WithTTL
-	cache = Memory[string, int](WithTTL(5 * time.Minute))
+	// Test TTL
+	cache = New[string, int](TTL(5 * time.Minute))
 	if cache.defaultTTL != 5*time.Minute {
 		t.Errorf("default TTL = %v; want 5m", cache.defaultTTL)
 	}
@@ -208,7 +208,7 @@ func TestMemoryCache_WithOptions(t *testing.T) {
 }
 
 func TestMemoryCache_DeleteNonExistent(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Delete non-existent key should not panic
@@ -224,7 +224,7 @@ func TestMemoryCache_DeleteNonExistent(t *testing.T) {
 
 func TestMemoryCache_EvictFromMain(t *testing.T) {
 	// Cache with 20000 capacity (approx 10 per shard with 2048 shards)
-	cache := Memory[int, int](WithSize(20000))
+	cache := New[int, int](Size(20000))
 	defer cache.Close()
 
 	// Fill cache and promote items to main by accessing them
@@ -248,7 +248,7 @@ func TestMemoryCache_EvictFromMain(t *testing.T) {
 }
 
 func TestMemoryCache_GetExpired(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Set with very short TTL
@@ -265,7 +265,7 @@ func TestMemoryCache_GetExpired(t *testing.T) {
 }
 
 func TestMemoryCache_SetUpdateExisting(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Set initial value
@@ -285,7 +285,7 @@ func TestMemoryCache_SetUpdateExisting(t *testing.T) {
 }
 
 func TestMemoryCache_Flush(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Add entries
@@ -318,7 +318,7 @@ func TestMemoryCache_Flush(t *testing.T) {
 }
 
 func TestMemoryCache_FlushEmpty(t *testing.T) {
-	cache := Memory[string, int]()
+	cache := New[string, int]()
 	defer cache.Close()
 
 	// Flush empty cache
@@ -330,7 +330,7 @@ func TestMemoryCache_FlushEmpty(t *testing.T) {
 
 func TestMemoryCache_GhostQueue(t *testing.T) {
 	// Small capacity to force ghost queue usage
-	cache := Memory[string, int](WithSize(10))
+	cache := New[string, int](Size(10))
 	defer cache.Close()
 
 	// Fill small queue (10% of 10 = 1)
@@ -355,7 +355,7 @@ func TestMemoryCache_GhostQueue(t *testing.T) {
 
 func TestMemoryCache_MainQueueEviction(t *testing.T) {
 	// Create cache with 20000 capacity (approx 10 per shard with 2048 shards)
-	cache := Memory[string, int](WithSize(20000))
+	cache := New[string, int](Size(20000))
 	defer cache.Close()
 
 	// Insert and access items to get them into Main queue
@@ -379,74 +379,8 @@ func TestMemoryCache_MainQueueEviction(t *testing.T) {
 	}
 }
 
-func TestMemoryCache_GetOrSet(t *testing.T) {
-	cache := Memory[string, int](WithTTL(time.Hour))
-	defer cache.Close()
-
-	loadCount := 0
-	loader := func() int {
-		loadCount++
-		return 42
-	}
-
-	// First call should invoke loader
-	val := cache.GetOrSet("key1", loader)
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 1 {
-		t.Errorf("loader called %d times; want 1", loadCount)
-	}
-
-	// Second call should return cached value without invoking loader
-	val = cache.GetOrSet("key1", loader)
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 1 {
-		t.Errorf("loader called %d times; want 1 (should use cached)", loadCount)
-	}
-
-	// Different key should invoke loader again
-	val = cache.GetOrSet("key2", loader)
-	if val != 42 {
-		t.Errorf("GetOrSet value = %d; want 42", val)
-	}
-	if loadCount != 2 {
-		t.Errorf("loader called %d times; want 2", loadCount)
-	}
-}
-
-func TestMemoryCache_GetOrSet_WithExplicitTTL(t *testing.T) {
-	cache := Memory[string, int]()
-	defer cache.Close()
-
-	loader := func() int { return 100 }
-
-	// GetOrSet with explicit short TTL
-	val := cache.GetOrSet("temp", loader, 50*time.Millisecond)
-	if val != 100 {
-		t.Errorf("GetOrSet value = %d; want 100", val)
-	}
-
-	// Should be available immediately
-	val, found := cache.Get("temp")
-	if !found || val != 100 {
-		t.Error("temp should be found immediately")
-	}
-
-	// Wait for expiration
-	time.Sleep(100 * time.Millisecond)
-
-	// Should be expired
-	_, found = cache.Get("temp")
-	if found {
-		t.Error("temp should be expired")
-	}
-}
-
 func TestMemoryCache_Set_VariadicTTL(t *testing.T) {
-	cache := Memory[string, int](WithTTL(time.Hour))
+	cache := New[string, int](TTL(time.Hour))
 	defer cache.Close()
 
 	// Set without TTL - uses default (1 hour, won't expire during test)
@@ -474,7 +408,7 @@ func TestMemoryCache_Set_VariadicTTL(t *testing.T) {
 }
 
 func TestMemoryCache_Set_NoDefaultTTL(t *testing.T) {
-	cache := Memory[string, int]() // No default TTL
+	cache := New[string, int]() // No default TTL
 	defer cache.Close()
 
 	// Set without TTL - should never expire

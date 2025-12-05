@@ -9,9 +9,10 @@ import (
 	"github.com/codeGROOVE-dev/sfcache/pkg/persist"
 )
 
-// PersistentCache is a cache backed by both memory and persistent storage.
+// TieredCache is a cache with an in-memory layer backed by persistent storage.
+// The memory layer provides fast access, while the store provides durability.
 // Core operations require context for I/O, while memory operations like Len() do not.
-type PersistentCache[K comparable, V any] struct {
+type TieredCache[K comparable, V any] struct {
 	// Store provides direct access to the persistence layer.
 	// Use this for persistence-specific operations:
 	//   cache.Store.Len(ctx)
@@ -21,18 +22,16 @@ type PersistentCache[K comparable, V any] struct {
 
 	memory     *s3fifo[K, V]
 	defaultTTL time.Duration
-	warmup     int
 }
 
-// Persistent creates a cache with persistence backing.
+// NewTiered creates a cache with an in-memory layer backed by persistent storage.
 //
 // Example:
 //
 //	store, _ := localfs.New[string, User]("myapp", "")
-//	cache, err := sfcache.Persistent[string, User](ctx, store,
-//	    sfcache.WithSize(10000),
-//	    sfcache.WithTTL(time.Hour),
-//	    sfcache.WithWarmup(1000),
+//	cache, err := sfcache.NewTiered[string, User](store,
+//	    sfcache.Size(10000),
+//	    sfcache.TTL(time.Hour),
 //	)
 //	if err != nil {
 //	    return err
@@ -43,52 +42,30 @@ type PersistentCache[K comparable, V any] struct {
 //	cache.Set(ctx, "user:123", user, time.Hour)   // explicit TTL
 //	user, ok, err := cache.Get(ctx, "user:123")
 //	storeCount, _ := cache.Store.Len(ctx)
-func Persistent[K comparable, V any](ctx context.Context, p persist.Store[K, V], opts ...Option) (*PersistentCache[K, V], error) {
+func NewTiered[K comparable, V any](store persist.Store[K, V], opts ...Option) (*TieredCache[K, V], error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	cache := &PersistentCache[K, V]{
-		Store:      p,
-		memory:     newS3FIFO[K, V](cfg),
-		defaultTTL: cfg.defaultTTL,
-		warmup:     cfg.warmup,
+	if store == nil {
+		return nil, fmt.Errorf("store cannot be nil")
 	}
 
-	// Warm up cache from persistence if configured
-	if cfg.warmup > 0 {
-		//nolint:contextcheck // Background warmup uses detached context to complete independently
-		go func() {
-			// Create detached context with timeout - warmup should complete independently
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-
-			cache.doWarmup(bgCtx)
-		}()
+	cache := &TieredCache[K, V]{
+		Store:      store,
+		memory:     newS3FIFO[K, V](cfg),
+		defaultTTL: cfg.defaultTTL,
 	}
 
 	return cache, nil
-}
-
-// doWarmup loads entries from persistence into memory cache.
-// Errors are silently ignored since warmup is best-effort.
-func (c *PersistentCache[K, V]) doWarmup(ctx context.Context) {
-	entryCh, errCh := c.Store.LoadRecent(ctx, c.warmup)
-
-	for entry := range entryCh {
-		c.memory.set(entry.Key, entry.Value, timeToNano(entry.Expiry))
-	}
-
-	// Drain error channel (errors silently ignored for best-effort warmup)
-	<-errCh
 }
 
 // Get retrieves a value from the cache.
 // It first checks the memory cache, then falls back to persistence.
 //
 //nolint:gocritic // unnamedResult - public API signature is intentionally clear without named returns
-func (c *PersistentCache[K, V]) Get(ctx context.Context, key K) (V, bool, error) {
+func (c *TieredCache[K, V]) Get(ctx context.Context, key K) (V, bool, error) {
 	// Check memory first
 	if val, ok := c.memory.get(key); ok {
 		return val, true, nil
@@ -117,34 +94,8 @@ func (c *PersistentCache[K, V]) Get(ctx context.Context, key K) (V, bool, error)
 	return val, true, nil
 }
 
-// GetOrSet retrieves a value from the cache, or computes and stores it if not found.
-// The loader function is only called if the key is not in the cache.
-// If no TTL is provided, the default TTL is used.
-// If the loader returns an error, it is propagated.
-func (c *PersistentCache[K, V]) GetOrSet(ctx context.Context, key K, loader func(context.Context) (V, error), ttl ...time.Duration) (V, error) {
-	val, ok, err := c.Get(ctx, key)
-	if err != nil {
-		var zero V
-		return zero, err
-	}
-	if ok {
-		return val, nil
-	}
-
-	val, err = loader(ctx)
-	if err != nil {
-		var zero V
-		return zero, err
-	}
-
-	if err := c.Set(ctx, key, val, ttl...); err != nil {
-		return val, err
-	}
-	return val, nil
-}
-
 // expiry returns the expiry time based on TTL and default TTL.
-func (c *PersistentCache[K, V]) expiry(ttl time.Duration) time.Time {
+func (c *TieredCache[K, V]) expiry(ttl time.Duration) time.Time {
 	if ttl <= 0 {
 		ttl = c.defaultTTL
 	}
@@ -158,7 +109,7 @@ func (c *PersistentCache[K, V]) expiry(ttl time.Duration) time.Time {
 // If no TTL is provided, the default TTL is used.
 // The value is ALWAYS stored in memory, even if persistence fails.
 // Returns an error if the key violates persistence constraints or if persistence fails.
-func (c *PersistentCache[K, V]) Set(ctx context.Context, key K, value V, ttl ...time.Duration) error {
+func (c *TieredCache[K, V]) Set(ctx context.Context, key K, value V, ttl ...time.Duration) error {
 	var t time.Duration
 	if len(ttl) > 0 {
 		t = ttl[0]
@@ -186,7 +137,7 @@ func (c *PersistentCache[K, V]) Set(ctx context.Context, key K, value V, ttl ...
 // Key validation and in-memory caching happen synchronously.
 // Persistence errors are logged but not returned (fire-and-forget).
 // Returns an error only for validation failures (e.g., invalid key format).
-func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ...time.Duration) error {
+func (c *TieredCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ...time.Duration) error {
 	var t time.Duration
 	if len(ttl) > 0 {
 		t = ttl[0]
@@ -216,7 +167,7 @@ func (c *PersistentCache[K, V]) SetAsync(ctx context.Context, key K, value V, tt
 
 // Delete removes a value from the cache.
 // The value is always removed from memory. Returns an error if persistence deletion fails.
-func (c *PersistentCache[K, V]) Delete(ctx context.Context, key K) error {
+func (c *TieredCache[K, V]) Delete(ctx context.Context, key K) error {
 	// Remove from memory first (always succeeds)
 	c.memory.del(key)
 
@@ -234,7 +185,7 @@ func (c *PersistentCache[K, V]) Delete(ctx context.Context, key K) error {
 
 // Flush removes all entries from the cache, including persistent storage.
 // Returns the total number of entries removed from memory and persistence.
-func (c *PersistentCache[K, V]) Flush(ctx context.Context) (int, error) {
+func (c *TieredCache[K, V]) Flush(ctx context.Context) (int, error) {
 	memoryRemoved := c.memory.flush()
 
 	persistRemoved, err := c.Store.Flush(ctx)
@@ -247,12 +198,12 @@ func (c *PersistentCache[K, V]) Flush(ctx context.Context) (int, error) {
 
 // Len returns the number of entries in the memory cache.
 // For persistence entry count, use cache.Store.Len(ctx).
-func (c *PersistentCache[K, V]) Len() int {
+func (c *TieredCache[K, V]) Len() int {
 	return c.memory.len()
 }
 
 // Close releases resources held by the cache.
-func (c *PersistentCache[K, V]) Close() error {
+func (c *TieredCache[K, V]) Close() error {
 	if err := c.Store.Close(); err != nil {
 		return fmt.Errorf("close persistence: %w", err)
 	}

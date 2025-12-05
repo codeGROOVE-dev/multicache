@@ -8,7 +8,7 @@ import (
 )
 
 func TestS3FIFO_BasicOperations(t *testing.T) {
-	cache := newS3FIFO[string, int](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[string, int](&config{size: 100})
 
 	// Test set and get
 	cache.set("key1", 42, 0)
@@ -35,7 +35,7 @@ func TestS3FIFO_BasicOperations(t *testing.T) {
 }
 
 func TestS3FIFO_Capacity(t *testing.T) {
-	cache := newS3FIFO[int, string](&config{size: 20000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, string](&config{size: 20000})
 
 	// Fill cache well beyond capacity
 	for i := range 30000 {
@@ -65,7 +65,7 @@ func TestS3FIFO_CapacityAccuracy(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("capacity_%d", tc.requested), func(t *testing.T) {
-			cache := newS3FIFO[int, int](&config{size: tc.requested, smallRatio: 0.1, ghostRatio: 1.0})
+			cache := newS3FIFO[int, int](&config{size: tc.requested})
 
 			// Insert many more items than capacity
 			for i := range tc.requested * 3 {
@@ -88,7 +88,7 @@ func TestS3FIFO_CapacityAccuracy(t *testing.T) {
 }
 
 func TestS3FIFO_Eviction(t *testing.T) {
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 
 	// Fill cache to capacity
 	for i := range 10000 {
@@ -115,7 +115,7 @@ func TestS3FIFO_Eviction(t *testing.T) {
 }
 
 func TestS3FIFO_GhostQueue(t *testing.T) {
-	cache := newS3FIFO[string, int](&config{size: 12, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[string, int](&config{size: 12})
 
 	// Fill one shard's worth
 	cache.set("a", 1, 0)
@@ -135,7 +135,7 @@ func TestS3FIFO_GhostQueue(t *testing.T) {
 }
 
 func TestS3FIFO_TTL(t *testing.T) {
-	cache := newS3FIFO[string, int](&config{size: 10, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[string, int](&config{size: 10})
 
 	// Set item with past expiry
 	past := time.Now().Add(-1 * time.Second).UnixNano()
@@ -157,7 +157,7 @@ func TestS3FIFO_TTL(t *testing.T) {
 }
 
 func TestS3FIFO_Concurrent(t *testing.T) {
-	cache := newS3FIFO[int, int](&config{size: 1000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 1000})
 	var wg sync.WaitGroup
 
 	// Concurrent writers
@@ -193,7 +193,7 @@ func TestS3FIFO_Concurrent(t *testing.T) {
 func TestS3FIFO_FrequencyPromotion(t *testing.T) {
 	// Use a larger capacity to ensure meaningful per-shard capacity
 	// With 512 shards, 10000 items = ~20 per shard
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 
 	// Fill cache with items using int keys for predictable sharding
 	for i := range 10000 {
@@ -233,7 +233,7 @@ func TestS3FIFO_FrequencyPromotion(t *testing.T) {
 
 func TestS3FIFO_SmallCapacity(t *testing.T) {
 	// Test with capacity of 12 (3 per shard)
-	cache := newS3FIFO[string, int](&config{size: 12, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[string, int](&config{size: 12})
 
 	// Fill to capacity
 	cache.set("a", 1, 0)
@@ -259,7 +259,7 @@ func TestS3FIFO_SmallCapacity(t *testing.T) {
 }
 
 func BenchmarkS3FIFO_Set(b *testing.B) {
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 	b.ResetTimer()
 
 	for i := range b.N {
@@ -268,7 +268,7 @@ func BenchmarkS3FIFO_Set(b *testing.B) {
 }
 
 func BenchmarkS3FIFO_Get(b *testing.B) {
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 	for i := range 10000 {
 		cache.set(i, i, 0)
 	}
@@ -280,7 +280,7 @@ func BenchmarkS3FIFO_Get(b *testing.B) {
 }
 
 func BenchmarkS3FIFO_GetParallel(b *testing.B) {
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 	for i := range 10000 {
 		cache.set(i, i, 0)
 	}
@@ -296,7 +296,7 @@ func BenchmarkS3FIFO_GetParallel(b *testing.B) {
 }
 
 func BenchmarkS3FIFO_Mixed(b *testing.B) {
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 	b.ResetTimer()
 
 	for i := range b.N {
@@ -311,7 +311,7 @@ func BenchmarkS3FIFO_Mixed(b *testing.B) {
 // Test S3-FIFO behavior: hot items survive one-hit wonder floods
 func TestS3FIFOBehavior(t *testing.T) {
 	// Use larger capacity for meaningful per-shard sizes with 2048 shards
-	cache := Memory[int, int](WithSize(10000))
+	cache := New[int, int](Size(10000))
 
 	// Insert hot items that will be accessed multiple times
 	for i := range 5000 {
@@ -344,7 +344,7 @@ func TestS3FIFOBehavior(t *testing.T) {
 
 // Test eviction order: accessed items survive new insertions
 func TestS3FIFOEvictionOrder(t *testing.T) {
-	cache := Memory[int, int](WithSize(40))
+	cache := New[int, int](Size(40))
 
 	// Fill cache with items
 	for i := range 40 {
@@ -373,7 +373,7 @@ func TestS3FIFOEvictionOrder(t *testing.T) {
 
 // Test S3-FIFO vs LRU: hot items survive, cold items evicted
 func TestS3FIFODetailed(t *testing.T) {
-	cache := Memory[int, int](WithSize(40))
+	cache := New[int, int](Size(40))
 
 	// Insert items 1-40 into cache
 	for i := 1; i <= 40; i++ {
@@ -415,7 +415,7 @@ func TestS3FIFODetailed(t *testing.T) {
 
 func TestS3FIFO_Flush(t *testing.T) {
 	// Use int keys for predictable sharding, large capacity to avoid evictions
-	cache := newS3FIFO[int, int](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[int, int](&config{size: 10000})
 
 	// Add some items (fewer than capacity to avoid eviction)
 	for i := range 100 {
@@ -457,7 +457,7 @@ func TestS3FIFO_Flush(t *testing.T) {
 }
 
 func TestS3FIFO_FlushEmpty(t *testing.T) {
-	cache := newS3FIFO[string, int](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+	cache := newS3FIFO[string, int](&config{size: 100})
 
 	// Flush empty cache
 	removed := cache.flush()
@@ -487,7 +487,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	// This exercises different code paths in shard/shardIndexSlow.
 
 	t.Run("int", func(t *testing.T) {
-		cache := newS3FIFO[int, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[int, string](&config{size: 100})
 		cache.set(42, "forty-two", 0)
 		cache.set(-1, "negative", 0)
 		cache.set(0, "zero", 0)
@@ -504,7 +504,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	})
 
 	t.Run("int64", func(t *testing.T) {
-		cache := newS3FIFO[int64, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[int64, string](&config{size: 100})
 		cache.set(int64(1<<62), "large", 0)
 		cache.set(int64(-1), "negative", 0)
 
@@ -517,7 +517,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	})
 
 	t.Run("uint", func(t *testing.T) {
-		cache := newS3FIFO[uint, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[uint, string](&config{size: 100})
 		cache.set(uint(0), "zero", 0)
 		cache.set(uint(100), "hundred", 0)
 
@@ -531,7 +531,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 
 	t.Run("uint64", func(t *testing.T) {
 		// Use larger size to ensure per-shard capacity > 1 (2048 shards)
-		cache := newS3FIFO[uint64, string](&config{size: 10000, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[uint64, string](&config{size: 10000})
 		cache.set(uint64(1<<63), "large", 0)
 		cache.set(uint64(0), "zero", 0)
 
@@ -544,7 +544,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	})
 
 	t.Run("string", func(t *testing.T) {
-		cache := newS3FIFO[string, int](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[string, int](&config{size: 100})
 		cache.set("hello", 1, 0)
 		cache.set("", 2, 0) // empty string is valid
 		unicode := "unicode-\u65e5\u672c\u8a9e"
@@ -563,7 +563,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 
 	t.Run("fmt.Stringer", func(t *testing.T) {
 		// Tests the fmt.Stringer fast path in shardIndexSlow
-		cache := newS3FIFO[stringerKey, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[stringerKey, string](&config{size: 100})
 		k1 := stringerKey{id: 1}
 		k2 := stringerKey{id: 2}
 		k3 := stringerKey{id: 999}
@@ -592,7 +592,7 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	t.Run("plain struct", func(t *testing.T) {
 		// Tests the fmt.Sprintf fallback in shardIndexSlow.
 		// This is not fast, but should be reliable.
-		cache := newS3FIFO[plainKey, string](&config{size: 100, smallRatio: 0.1, ghostRatio: 1.0})
+		cache := newS3FIFO[plainKey, string](&config{size: 100})
 		k1 := plainKey{a: 1, b: "one"}
 		k2 := plainKey{a: 2, b: "two"}
 		k3 := plainKey{a: 1, b: "one"} // Same as k1

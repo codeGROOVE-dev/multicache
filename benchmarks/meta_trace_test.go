@@ -210,88 +210,8 @@ func TestMetaTrace(t *testing.T) {
 	}
 }
 
-// TestMetaTraceTuning tests different S3-FIFO parameter combinations.
-// Run with: go test -run=TestMetaTraceTuning -v
-func TestMetaTraceTuning(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping tuning benchmark in short mode")
-	}
-
-	ops, err := loadMetaTraceOnce()
-	if err != nil {
-		t.Fatalf("failed to load trace: %v", err)
-	}
-	t.Logf("Loaded %d operations", len(ops))
-
-	cacheSize := 100_000
-
-	// Get baseline from LRU
-	lruRate := runMetaTraceLRU(ops, cacheSize)
-	fmt.Printf("\nBaseline LRU: %.2f%%\n", lruRate*100)
-
-	// Test different small/ghost ratio combinations
-	fmt.Println()
-	fmt.Println("### S3-FIFO Parameter Tuning (100K cache)")
-	fmt.Println()
-	fmt.Println("| Small | Ghost | Hit Rate | vs LRU |")
-	fmt.Println("|-------|-------|----------|--------|")
-
-	smallRatios := []float64{0.01, 0.05, 0.10, 0.15, 0.20}
-	ghostRatios := []float64{0.5, 1.0, 1.5, 2.0}
-
-	type tuningResult struct {
-		small, ghost, rate float64
-	}
-	var best tuningResult
-
-	for _, small := range smallRatios {
-		for _, ghost := range ghostRatios {
-			rate := runMetaTraceSFCacheWithParams(ops, cacheSize, small, ghost)
-			delta := (rate - lruRate) * 100
-			sign := "+"
-			if delta < 0 {
-				sign = ""
-			}
-			fmt.Printf("| %5.0f%% | %5.0f%% | %7.2f%% | %s%.2f%% |\n",
-				small*100, ghost*100, rate*100, sign, delta)
-
-			if rate > best.rate {
-				best = tuningResult{small, ghost, rate}
-			}
-		}
-	}
-
-	fmt.Printf("\nBest: small=%.0f%%, ghost=%.0f%%, rate=%.2f%% (LRU: %.2f%%)\n",
-		best.small*100, best.ghost*100, best.rate*100, lruRate*100)
-}
-
-func runMetaTraceSFCacheWithParams(ops []traceOp, cacheSize int, smallRatio, ghostRatio float64) float64 {
-	cache := sfcache.Memory[string, string](
-		sfcache.WithSize(cacheSize),
-		sfcache.WithSmallRatio(smallRatio),
-		sfcache.WithGhostRatio(ghostRatio),
-	)
-	defer cache.Close()
-
-	var hits, misses int64
-	for _, op := range ops {
-		switch op.op {
-		case "GET":
-			if _, ok := cache.Get(op.key); ok {
-				hits++
-			} else {
-				misses++
-				cache.Set(op.key, op.key)
-			}
-		case "SET":
-			cache.Set(op.key, op.key)
-		}
-	}
-	return float64(hits) / float64(hits+misses)
-}
-
 func runMetaTraceSFCache(ops []traceOp, cacheSize int) float64 {
-	cache := sfcache.Memory[string, string](sfcache.WithSize(cacheSize))
+	cache := sfcache.New[string, string](sfcache.Size(cacheSize))
 	defer cache.Close()
 
 	var hits, misses int64

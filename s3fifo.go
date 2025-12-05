@@ -264,23 +264,14 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		c.keyIsString = true
 	}
 
-	// Auto-tune configuration if not explicitly set
-	smallRatio := cfg.smallRatio
-	if smallRatio <= 0 {
-		if capacity <= 16384 {
-			smallRatio = 0.01 // 1% for small caches (Zipf-friendly)
-		} else {
-			smallRatio = 0.05 // 5% for large caches (Meta trace optimal)
-		}
-	}
-
-	ghostRatio := cfg.ghostRatio
-	if ghostRatio <= 0 {
-		if capacity <= 16384 {
-			ghostRatio = 0.5 // 50% for small caches
-		} else {
-			ghostRatio = 1.0 // 100% for large caches
-		}
+	// Auto-tune ratios based on capacity
+	var smallRatio, ghostRatio float64
+	if capacity <= 16384 {
+		smallRatio = 0.01 // 1% for small caches (Zipf-friendly)
+		ghostRatio = 0.5  // 50% for small caches
+	} else {
+		smallRatio = 0.05 // 5% for large caches (Meta trace optimal)
+		ghostRatio = 1.0  // 100% for large caches
 	}
 
 	for i := range numShards {
@@ -430,83 +421,6 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 	}
 
 	return ent.value, true
-}
-
-// getOrSet retrieves a value or sets it if not found, in a single operation.
-// Returns the value and true if found, or sets the value and returns false.
-func (c *s3fifo[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
-	return c.shard(key).getOrSet(key, value, expiryNano)
-}
-
-func (s *shard[K, V]) getOrSet(key K, value V, expiryNano int64) (V, bool) {
-	// Fast path: try read lock first (optimistic for cache hits)
-	s.mu.RLock()
-	if ent, ok := s.entries[key]; ok {
-		// Check if NOT expired - return early with cache hit
-		if ent.expiryNano == 0 || time.Now().UnixNano() <= ent.expiryNano {
-			if f := ent.freq.Load(); f < 3 {
-				ent.freq.Store(f + 1)
-			}
-			v := ent.value
-			s.mu.RUnlock()
-			return v, true
-		}
-		// Expired - need write lock to update, fall through to slow path
-		s.mu.RUnlock()
-	} else {
-		s.mu.RUnlock()
-	}
-
-	// Slow path: take write lock for insert/update
-	s.mu.Lock()
-
-	// Double-check after acquiring write lock
-	if ent, ok := s.entries[key]; ok {
-		// Check expiration
-		if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
-			// Expired - update in place
-			ent.value = value
-			ent.expiryNano = expiryNano
-			s.mu.Unlock()
-			return value, false
-		}
-		// Another goroutine inserted it - return existing value
-		if f := ent.freq.Load(); f < 3 {
-			ent.freq.Store(f + 1)
-		}
-		v := ent.value
-		s.mu.Unlock()
-		return v, true
-	}
-
-	// Not found - insert new entry
-	inGhost := false
-	if ghostEnt, ok := s.ghostKeys[key]; ok {
-		inGhost = true
-		s.ghost.remove(ghostEnt)
-		delete(s.ghostKeys, key)
-		s.putGhostEntry(ghostEnt)
-	}
-
-	ent := s.getEntry()
-	ent.key = key
-	ent.value = value
-	ent.expiryNano = expiryNano
-	ent.inSmall = !inGhost
-
-	for s.small.len+s.main.len >= s.capacity {
-		s.evict()
-	}
-
-	if ent.inSmall {
-		s.small.pushBack(ent)
-	} else {
-		s.main.pushBack(ent)
-	}
-
-	s.entries[key] = ent
-	s.mu.Unlock()
-	return value, false
 }
 
 // set adds or updates a value in the cache.

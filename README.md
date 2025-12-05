@@ -34,7 +34,7 @@ As a stupid-fast in-memory cache:
 import "github.com/codeGROOVE-dev/sfcache"
 
 // strings as keys, ints as values
-cache := sfcache.Memory[string, int]()
+cache := sfcache.New[string, int]()
 cache.Set("answer", 42)
 val, found := cache.Get("answer")
 ```
@@ -48,7 +48,7 @@ import (
 )
 
 p, _ := localfs.New[string, User]("myapp", "")
-cache, _ := sfcache.Persistent[string, User](ctx, p)
+cache, _ := sfcache.NewTiered[string, User](p)
 
 cache.SetAsync(ctx, "user:123", user) // Don't wait for the key to persist
 cache.Store.Len(ctx)                  // Access persistence layer directly
@@ -60,7 +60,7 @@ A persistent cache suitable for Cloud Run or local development; uses Cloud Datas
 import "github.com/codeGROOVE-dev/sfcache/pkg/persist/cloudrun"
 
 p, _ := cloudrun.New[string, User](ctx, "myapp")
-cache, _ := sfcache.Persistent[string, User](ctx, p)
+cache, _ := sfcache.NewTiered[string, User](p)
 ```
 
 ## Performance against the Competition

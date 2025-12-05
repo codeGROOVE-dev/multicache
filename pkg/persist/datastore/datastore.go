@@ -240,10 +240,9 @@ func (p *store[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (int, e
 		Filter("expiry <", cutoff).
 		KeysOnly()
 
-	var entries []entry
-	keys, err := p.client.GetAll(ctx, query, &entries)
+	keys, err := p.client.AllKeys(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("query expired entries: %w", err)
+		return 0, fmt.Errorf("query expired keys: %w", err)
 	}
 
 	if len(keys) == 0 {
@@ -261,13 +260,12 @@ func (p *store[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (int, e
 // Flush removes all entries from Datastore.
 // Returns the number of entries removed and any error.
 func (p *store[K, V]) Flush(ctx context.Context) (int, error) {
-	// Query for all keys (use empty slice for mock compatibility)
+	// Query for all keys
 	query := ds.NewQuery(p.kind).KeysOnly()
 
-	var dst []entry
-	keys, err := p.client.GetAll(ctx, query, &dst)
+	keys, err := p.client.AllKeys(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("query all entries: %w", err)
+		return 0, fmt.Errorf("query all keys: %w", err)
 	}
 
 	if len(keys) == 0 {
@@ -284,13 +282,12 @@ func (p *store[K, V]) Flush(ctx context.Context) (int, error) {
 
 // Len returns the number of entries in Datastore.
 func (p *store[K, V]) Len(ctx context.Context) (int, error) {
-	query := ds.NewQuery(p.kind).KeysOnly()
-	var dst []entry
-	keys, err := p.client.GetAll(ctx, query, &dst)
+	query := ds.NewQuery(p.kind)
+	count, err := p.client.Count(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("query all entries: %w", err)
+		return 0, fmt.Errorf("count entries: %w", err)
 	}
-	return len(keys), nil
+	return count, nil
 }
 
 // Close releases Datastore client resources.

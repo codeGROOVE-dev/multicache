@@ -8,7 +8,7 @@ import (
 )
 
 func TestMemoryCache_ReadPerformance(t *testing.T) {
-	cache := Memory[int, int]()
+	cache := New[int, int]()
 	defer cache.Close()
 
 	// Populate cache
