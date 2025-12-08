@@ -7,7 +7,16 @@ tag:
 		echo "ERROR: VERSION is required. Usage: make tag VERSION=v1.2.3"; \
 		exit 1; \
 	fi
-	@echo "Tagging all modules with $(VERSION)..."
+	@echo "=== Releasing $(VERSION) ==="
+	@echo ""
+	@echo "Step 1: Update go.mod to require pkg/persist $(VERSION)..."
+	@sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist $(VERSION)|' go.mod
+	@echo ""
+	@echo "Step 2: Commit go.mod changes..."
+	@git add go.mod
+	@git commit -m "Release $(VERSION)" || echo "  (no changes to commit)"
+	@echo ""
+	@echo "Step 3: Create tags..."
 	@git tag -a $(VERSION) -m "$(VERSION)"
 	@find . -name go.mod -not -path "./go.mod" | while read mod; do \
 		dir=$$(dirname $$mod); \
@@ -16,10 +25,13 @@ tag:
 		git tag -a $$dir/$(VERSION) -m "$(VERSION)"; \
 	done
 	@echo ""
-	@echo "Created tags:"
-	@git tag -l "$(VERSION)" "*/$(VERSION)" | sed 's/^/  /'
+	@echo "Step 4: Push commit and tags..."
+	@git push origin main
+	@git push origin --tags
 	@echo ""
-	@echo "To push tags, run: git push origin --tags"
+	@echo "=== Release $(VERSION) complete ==="
+	@echo "Tags pushed:"
+	@git tag -l "$(VERSION)" "*/$(VERSION)" | sed 's/^/  /'
 
 test:
 	@echo "Running tests in all modules..."
