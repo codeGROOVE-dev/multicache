@@ -476,28 +476,35 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 	// Slow path: insert new key (already holding lock)
 
-	// Check if key is in ghost (Bloom filter)
-	h := s.hasher(key)
-	inGhost := s.ghostActive.Contains(h)
-	if !inGhost {
-		inGhost = s.ghostAging.Contains(h)
-	}
-
 	// Create new entry
 	ent := s.newEntry()
 	ent.key = key
 	ent.value = value
 	ent.expiryNano = expiryNano
-	ent.inSmall = !inGhost
 
-	// Evict when at capacity (no overflow buffer)
-	for s.small.len+s.main.len >= s.capacity {
-		// Use > instead of >= to match reference implementation
-		if s.small.len > s.capacity/10 {
-			s.evictFromSmall()
-		} else {
-			s.evictFromMain()
+	// Lazily check ghost only if at capacity (when eviction matters)
+	// This saves 2× bloom filter checks + hash computation when cache isn't full
+	if s.small.len+s.main.len >= s.capacity {
+		// Check if key is in ghost (Bloom filter)
+		h := s.hasher(key)
+		inGhost := s.ghostActive.Contains(h)
+		if !inGhost {
+			inGhost = s.ghostAging.Contains(h)
 		}
+		ent.inSmall = !inGhost
+
+		// Evict to make room
+		for s.small.len+s.main.len >= s.capacity {
+			// Use > instead of >= to match reference implementation
+			if s.small.len > s.capacity/10 {
+				s.evictFromSmall()
+			} else {
+				s.evictFromMain()
+			}
+		}
+	} else {
+		// Cache not full, always insert to small queue
+		ent.inSmall = true
 	}
 
 	// Add to appropriate queue
