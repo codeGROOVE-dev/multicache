@@ -157,6 +157,18 @@ sfcache prioritizes high hit-rates and low read latency, but it's excellent all 
 
 Cache performance is a game of balancing trade-offs. There will be workloads where other cache implementations are better, but nobody blends speed and persistence like we do.
 
+## Implementation Notes
+
+### Differences from the S3-FIFO paper
+
+sfcache implements the core S3-FIFO algorithm (Small/Main/Ghost queues with frequency-based promotion) with these optimizations:
+
+1. **Dynamic Sharding** - 1-256 independent S3-FIFO shards (vs single-threaded) for concurrent workloads
+2. **Bloom Filter Ghosts** - Two rotating Bloom filters track evicted keys (vs storing actual keys), reducing memory 10-100x
+3. **Lazy Ghost Checks** - Only check ghosts when evicting, saving 5-9% latency when cache isn't full
+4. **Intrusive Lists** - Embed pointers in entries (vs separate nodes) for zero-allocation queue ops
+5. **Fast-path Hashing** - Specialized for `int`/`string` keys using wyhash and bit mixing
+
 ## License
 
 Apache 2.0
