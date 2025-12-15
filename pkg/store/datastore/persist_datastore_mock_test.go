@@ -7,6 +7,7 @@ import (
 	"time"
 
 	ds "github.com/codeGROOVE-dev/ds9/pkg/datastore"
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
 )
 
 // newMockDatastorePersist creates a datastore persistence layer with mock client.
@@ -15,8 +16,10 @@ func newMockDatastorePersist[K comparable, V any](t *testing.T) (dp *Store[K, V]
 	client, cleanup := ds.NewMockClient(t)
 
 	return &Store[K, V]{
-		client: client,
-		kind:   "CacheEntry",
+		client:     client,
+		kind:       "CacheEntry",
+		compressor: compress.None(),
+		ext:        ".j",
 	}, cleanup
 }
 
@@ -356,14 +359,14 @@ func TestDatastorePersist_Mock_Location(t *testing.T) {
 	defer cleanup()
 
 	loc := dp.Location("mykey")
-	expected := "CacheEntry/mykey"
+	expected := "CacheEntry/mykey.j"
 	if loc != expected {
 		t.Errorf("Location() = %q; want %q", loc, expected)
 	}
 
 	// Test with different key
 	loc2 := dp.Location("test:key-123")
-	expected2 := "CacheEntry/test:key-123"
+	expected2 := "CacheEntry/test:key-123.j"
 	if loc2 != expected2 {
 		t.Errorf("Location() = %q; want %q", loc2, expected2)
 	}

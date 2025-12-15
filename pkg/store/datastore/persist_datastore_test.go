@@ -261,9 +261,9 @@ func TestDatastorePersist_Location(t *testing.T) {
 		t.Error("Location() should return non-empty string")
 	}
 
-	// Should contain the kind and key
-	if loc != "CacheEntry/mykey" {
-		t.Errorf("Location() = %q; want %q", loc, "CacheEntry/mykey")
+	// Should contain the kind, key, and extension
+	if loc != "CacheEntry/mykey.j" {
+		t.Errorf("Location() = %q; want %q", loc, "CacheEntry/mykey.j")
 	}
 }
 

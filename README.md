@@ -19,9 +19,10 @@ Designed for persistently caching API requests in an unreliable environment, thi
 - **Multi-tier persistent cache (optional)** - Bring your own database or use built-in backends:
   - [`pkg/store/cloudrun`](pkg/store/cloudrun) - Automatically select Google Cloud Datastore in Cloud Run, localfs elsewhere
   - [`pkg/store/datastore`](pkg/store/datastore) - Google Cloud Datastore
-  - [`pkg/store/localfs`](pkg/store/localfs) - Local files (gob encoding, zero dependencies)
+  - [`pkg/store/localfs`](pkg/store/localfs) - Local files (JSON encoding, zero dependencies)
   - [`pkg/store/null`](pkg/store/null) - No-op (for testing or TieredCache API compatibility)
   - [`pkg/store/valkey`](pkg/store/valkey) - Valkey/Redis
+- **Optional compression** - S2 or Zstd for all persistence backends via [`pkg/store/compress`](pkg/store/compress)
 - **Per-item TTL** - Optional expiration
 - **Thundering herd prevention** - `GetSet` deduplicates concurrent loads for the same key
 - **Graceful degradation** - Cache works even if persistence fails
@@ -53,6 +54,14 @@ cache, _ := sfcache.NewTiered(p)
 
 cache.SetAsync(ctx, "user:123", user) // Don't wait for the key to persist
 cache.Store.Len(ctx)                  // Access persistence layer directly
+```
+
+With S2 compression (fast, good ratio):
+
+```go
+import "github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
+
+p, _ := localfs.New[string, User]("myapp", "", compress.S2())
 ```
 
 How about a persistent cache suitable for Cloud Run or local development? This uses Cloud DataStore if available, local files if not:

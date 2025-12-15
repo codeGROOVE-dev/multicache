@@ -8,23 +8,25 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
 	"github.com/valkey-io/valkey-go"
 )
 
-const (
-	maxKeyLength = 512 // Maximum key length for Valkey
-)
+const maxKeyLength = 512 // Maximum key length for Valkey
 
 // Store implements persistence using Valkey/Redis.
 type Store[K comparable, V any] struct {
-	client valkey.Client
-	prefix string // Key prefix to namespace cache entries
+	client     valkey.Client
+	prefix     string // Key prefix to namespace cache entries
+	compressor compress.Compressor
+	ext        string
 }
 
 // New creates a new Valkey-based persistence layer.
 // The cacheID is used as a key prefix to namespace cache entries.
 // addr should be in the format "host:port" (e.g., "localhost:6379").
-func New[K comparable, V any](ctx context.Context, cacheID, addr string) (*Store[K, V], error) {
+// Optional compressor enables compression (default: no compression).
+func New[K comparable, V any](ctx context.Context, cacheID, addr string, c ...compress.Compressor) (*Store[K, V], error) {
 	if cacheID == "" {
 		return nil, errors.New("cacheID cannot be empty")
 	}
@@ -32,23 +34,26 @@ func New[K comparable, V any](ctx context.Context, cacheID, addr string) (*Store
 		addr = "localhost:6379"
 	}
 
-	// Create Valkey client
-	client, err := valkey.NewClient(valkey.ClientOption{
-		InitAddress: []string{addr},
-	})
+	comp := compress.None()
+	if len(c) > 0 && c[0] != nil {
+		comp = c[0]
+	}
+
+	client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{addr}})
 	if err != nil {
 		return nil, fmt.Errorf("create valkey client: %w", err)
 	}
 
-	// Verify connectivity with PING
 	if err := client.Do(ctx, client.B().Ping().Build()).Error(); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("valkey ping failed: %w", err)
 	}
 
 	return &Store[K, V]{
-		client: client,
-		prefix: cacheID + ":",
+		client:     client,
+		prefix:     cacheID + ":",
+		compressor: comp,
+		ext:        comp.Extension(),
 	}, nil
 }
 
@@ -64,9 +69,9 @@ func (*Store[K, V]) ValidateKey(key K) error {
 	return nil
 }
 
-// makeKey creates a Valkey key from a cache key with prefix.
+// makeKey creates a Valkey key from a cache key with prefix and extension.
 func (s *Store[K, V]) makeKey(key K) string {
-	return s.prefix + fmt.Sprintf("%v", key)
+	return s.prefix + fmt.Sprintf("%v", key) + s.ext
 }
 
 // Location returns the Valkey key for a given cache key.
@@ -89,8 +94,7 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (V, time.Time, bool, error
 
 	resps := s.client.DoMulti(ctx, cmds...)
 
-	// Check if key exists
-	data, err := resps[0].ToString()
+	data, err := resps[0].AsBytes()
 	if err != nil {
 		if valkey.IsValkeyNil(err) {
 			return zero, time.Time{}, false, nil
@@ -98,9 +102,13 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (V, time.Time, bool, error
 		return zero, time.Time{}, false, fmt.Errorf("valkey get: %w", err)
 	}
 
-	// Parse value
+	jsonData, err := s.compressor.Decode(data)
+	if err != nil {
+		return zero, time.Time{}, false, fmt.Errorf("decompress: %w", err)
+	}
+
 	var v V
-	if err := json.Unmarshal([]byte(data), &v); err != nil {
+	if err := json.Unmarshal(jsonData, &v); err != nil {
 		return zero, time.Time{}, false, fmt.Errorf("unmarshal value: %w", err)
 	}
 
@@ -116,27 +124,24 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (V, time.Time, bool, error
 
 // Set saves a value to Valkey with optional expiry.
 func (s *Store[K, V]) Set(ctx context.Context, key K, value V, expiry time.Time) error {
-	k := s.makeKey(key)
-
-	// Marshal value to JSON
-	data, err := json.Marshal(value)
+	jsonData, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("marshal value: %w", err)
 	}
 
-	// Calculate TTL
-	var ttl time.Duration
-	if !expiry.IsZero() {
-		ttl = time.Until(expiry)
-		if ttl <= 0 {
-			// Already expired, don't store
-			return nil
-		}
+	data, err := s.compressor.Encode(jsonData)
+	if err != nil {
+		return fmt.Errorf("compress: %w", err)
 	}
 
-	// Store with TTL if specified
+	k := s.makeKey(key)
 	var cmd valkey.Completed
-	if ttl > 0 {
+
+	if !expiry.IsZero() {
+		ttl := time.Until(expiry)
+		if ttl <= 0 {
+			return nil // Already expired
+		}
 		cmd = s.client.B().Set().Key(k).Value(string(data)).Px(ttl).Build()
 	} else {
 		cmd = s.client.B().Set().Key(k).Value(string(data)).Build()
@@ -145,7 +150,6 @@ func (s *Store[K, V]) Set(ctx context.Context, key K, value V, expiry time.Time)
 	if err := s.client.Do(ctx, cmd).Error(); err != nil {
 		return fmt.Errorf("valkey set: %w", err)
 	}
-
 	return nil
 }
 

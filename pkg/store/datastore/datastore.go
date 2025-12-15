@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ds "github.com/codeGROOVE-dev/ds9/pkg/datastore"
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
 )
 
 const (
@@ -19,19 +20,21 @@ const (
 
 // Store implements persistence using Google Cloud Datastore.
 type Store[K comparable, V any] struct {
-	client *ds.Client
-	kind   string
+	client     *ds.Client
+	kind       string
+	compressor compress.Compressor
+	ext        string
 }
 
 // ValidateKey checks if a key is valid for Datastore persistence.
 // Datastore has stricter key length limits than files.
 func (*Store[K, V]) ValidateKey(key K) error {
-	s := fmt.Sprintf("%v", key)
-	if len(s) > maxDatastoreKeyLen {
-		return fmt.Errorf("key too long: %d bytes (max %d for datastore)", len(s), maxDatastoreKeyLen)
-	}
-	if s == "" {
+	k := fmt.Sprintf("%v", key)
+	if k == "" {
 		return errors.New("key cannot be empty")
+	}
+	if len(k) > maxDatastoreKeyLen {
+		return fmt.Errorf("key too long: %d bytes (max %d for datastore)", len(k), maxDatastoreKeyLen)
 	}
 	return nil
 }
@@ -40,7 +43,7 @@ func (*Store[K, V]) ValidateKey(key K) error {
 // Implements the Store interface Location() method.
 // Format: "kind/key" (e.g., "CacheEntry/mykey").
 func (s *Store[K, V]) Location(key K) string {
-	return fmt.Sprintf("%s/%v", s.kind, key)
+	return fmt.Sprintf("%s/%v%s", s.kind, key, s.ext)
 }
 
 // entry represents a cache entry in Datastore.
@@ -54,27 +57,30 @@ type entry struct {
 
 // New creates a new Datastore-based persistence layer.
 // The cacheID is used as the Datastore database name.
-// An empty projectID will be auto-detected from the environment.
-func New[K comparable, V any](ctx context.Context, cacheID string) (*Store[K, V], error) {
-	// Empty project ID lets ds9 auto-detect
+// Optional compressor enables compression (default: no compression).
+func New[K comparable, V any](ctx context.Context, cacheID string, c ...compress.Compressor) (*Store[K, V], error) {
+	comp := compress.None()
+	if len(c) > 0 && c[0] != nil {
+		comp = c[0]
+	}
+
 	client, err := ds.NewClientWithDatabase(ctx, "", cacheID)
 	if err != nil {
 		return nil, fmt.Errorf("create datastore client: %w", err)
 	}
 
-	// Verify connectivity (assert readiness)
-	// Note: ds9 doesn't expose Ping, but client creation validates connectivity
-
 	return &Store[K, V]{
-		client: client,
-		kind:   datastoreKind,
+		client:     client,
+		kind:       datastoreKind,
+		compressor: comp,
+		ext:        comp.Extension(),
 	}, nil
 }
 
 // makeKey creates a Datastore key from a cache key.
-// We use the string representation directly as the key name.
+// We use the string representation directly as the key name, with extension suffix.
 func (s *Store[K, V]) makeKey(key K) *ds.Key {
-	return ds.NameKey(s.kind, fmt.Sprintf("%v", key), nil)
+	return ds.NameKey(s.kind, fmt.Sprintf("%v%s", key, s.ext), nil)
 }
 
 // Get retrieves a value from Datastore.
@@ -98,14 +104,17 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (value V, expiry time.Time
 		return zero, time.Time{}, false, nil
 	}
 
-	// Decode from base64
 	b, err := base64.StdEncoding.DecodeString(e.Value)
 	if err != nil {
 		return zero, time.Time{}, false, fmt.Errorf("decode base64: %w", err)
 	}
 
-	// Decode value from JSON
-	if err := json.Unmarshal(b, &value); err != nil {
+	jsonData, err := s.compressor.Decode(b)
+	if err != nil {
+		return zero, time.Time{}, false, fmt.Errorf("decompress: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonData, &value); err != nil {
 		return zero, time.Time{}, false, fmt.Errorf("unmarshal value: %w", err)
 	}
 
@@ -114,21 +123,23 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (value V, expiry time.Time
 
 // Set saves a value to Datastore.
 func (s *Store[K, V]) Set(ctx context.Context, key K, value V, expiry time.Time) error {
-	k := s.makeKey(key)
-
-	// Encode value as JSON then base64
-	b, err := json.Marshal(value)
+	jsonData, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("marshal value: %w", err)
 	}
 
+	data, err := s.compressor.Encode(jsonData)
+	if err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+
 	e := entry{
-		Value:     base64.StdEncoding.EncodeToString(b),
+		Value:     base64.StdEncoding.EncodeToString(data),
 		Expiry:    expiry,
 		UpdatedAt: time.Now(),
 	}
 
-	if _, err := s.client.Put(ctx, k, &e); err != nil {
+	if _, err := s.client.Put(ctx, s.makeKey(key), &e); err != nil {
 		return fmt.Errorf("datastore put: %w", err)
 	}
 

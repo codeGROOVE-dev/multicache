@@ -7,8 +7,14 @@ require (
 	github.com/codeGROOVE-dev/sfcache/pkg/store/localfs v1.4.1
 )
 
-require github.com/codeGROOVE-dev/ds9 v0.8.0 // indirect
+require (
+	github.com/codeGROOVE-dev/ds9 v0.8.0 // indirect
+	github.com/codeGROOVE-dev/sfcache/pkg/store/compress v0.0.0 // indirect
+	github.com/klauspost/compress v1.18.2 // indirect
+)
 
 replace github.com/codeGROOVE-dev/sfcache/pkg/store/datastore => ../datastore
 
 replace github.com/codeGROOVE-dev/sfcache/pkg/store/localfs => ../localfs
+
+replace github.com/codeGROOVE-dev/sfcache/pkg/store/compress => ../compress

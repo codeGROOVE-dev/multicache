@@ -2,11 +2,10 @@
 package localfs
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/gob"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
 )
 
 // Entry represents a cache entry with its metadata for serialization.
@@ -26,55 +27,41 @@ type Entry[K comparable, V any] struct {
 
 const maxKeyLength = 127 // Maximum key length to avoid filesystem constraints
 
-var (
-	// Pool for bufio.Writer to reduce allocations.
-	writerPool = sync.Pool{
-		New: func() any {
-			return bufio.NewWriterSize(nil, 4096)
-		},
-	}
-	// Pool for bufio.Reader to reduce allocations.
-	readerPool = sync.Pool{
-		New: func() any {
-			return bufio.NewReaderSize(nil, 4096)
-		},
-	}
-)
-
-// Store implements file-based persistence using local files with gob encoding.
+// Store implements file-based persistence using local files with JSON encoding.
 //
 //nolint:govet // fieldalignment - current layout groups related fields logically (mutex with map it protects)
 type Store[K comparable, V any] struct {
 	subdirsMu   sync.RWMutex
-	Dir         string          // Exported for testing - directory path
-	subdirsMade map[string]bool // Cache of created subdirectories
+	Dir         string              // Exported for testing - directory path
+	subdirsMade map[string]bool     // Cache of created subdirectories
+	compressor  compress.Compressor // Compression algorithm
+	ext         string              // File extension based on compressor
 }
 
 // New creates a new file-based persistence layer.
 // The cacheID is used as a subdirectory name under the OS cache directory.
 // If dir is provided (non-empty), it's used as the base directory instead of OS cache dir.
-// This is useful for testing with temporary directories.
-func New[K comparable, V any](cacheID string, dir string) (*Store[K, V], error) {
-	// Validate cacheID to prevent path traversal attacks
+// Optional compressor enables compression (default: no compression, plain JSON with .j extension).
+func New[K comparable, V any](cacheID, dir string, c ...compress.Compressor) (*Store[K, V], error) {
 	if cacheID == "" {
 		return nil, errors.New("cacheID cannot be empty")
 	}
-	// Check for path traversal attempts
 	if strings.Contains(cacheID, "..") || strings.Contains(cacheID, "/") || strings.Contains(cacheID, "\\") {
 		return nil, errors.New("invalid cacheID: contains path separators or traversal sequences")
 	}
-	// Check for null bytes (security)
 	if strings.Contains(cacheID, "\x00") {
 		return nil, errors.New("invalid cacheID: contains null byte")
 	}
 
-	// Use provided dir or get OS-appropriate cache directory
+	comp := compress.None()
+	if len(c) > 0 && c[0] != nil {
+		comp = c[0]
+	}
+
 	var fullDir string
 	if dir != "" {
-		// Use provided directory (typically for testing)
 		fullDir = filepath.Join(dir, cacheID)
 	} else {
-		// Get OS cache directory
 		baseDir, err := os.UserCacheDir()
 		if err != nil {
 			return nil, fmt.Errorf("get user cache dir: %w", err)
@@ -82,55 +69,50 @@ func New[K comparable, V any](cacheID string, dir string) (*Store[K, V], error) 
 		fullDir = filepath.Join(baseDir, cacheID)
 	}
 
-	// Create directory and verify accessibility (assert readiness)
 	if err := os.MkdirAll(fullDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 
-	// Verify directory is writable by creating a test file
 	testFile := filepath.Join(fullDir, ".write_test")
 	if err := os.WriteFile(testFile, []byte("test"), 0o600); err != nil {
 		return nil, fmt.Errorf("cache dir not writable: %w", err)
 	}
-	if err := os.Remove(testFile); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("remove test file: %w", err)
+	_ = os.Remove(testFile) //nolint:errcheck // best-effort cleanup
+
+	ext := comp.Extension()
+	if ext == "" {
+		ext = ".j"
 	}
 
 	return &Store[K, V]{
 		Dir:         fullDir,
 		subdirsMade: make(map[string]bool),
+		compressor:  comp,
+		ext:         ext,
 	}, nil
 }
 
 // ValidateKey checks if a key is valid for file persistence.
-// Keys must be alphanumeric, dash, underscore, period, or colon, and max 127 characters.
+// Since keys are hashed to SHA256, any characters are allowed.
+// Only length is validated to prevent memory issues.
 func (*Store[K, V]) ValidateKey(key K) error {
-	s := fmt.Sprintf("%v", key)
-	if len(s) > maxKeyLength {
-		return fmt.Errorf("key too long: %d bytes (max %d)", len(s), maxKeyLength)
+	k := fmt.Sprintf("%v", key)
+	if k == "" {
+		return errors.New("key cannot be empty")
 	}
-
-	// Allow alphanumeric, dash, underscore, period, colon
-	for _, ch := range s {
-		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') &&
-			(ch < '0' || ch > '9') && ch != '-' && ch != '_' && ch != '.' && ch != ':' {
-			return fmt.Errorf("invalid character %q in key (only alphanumeric, dash, underscore, period, colon allowed)", ch)
-		}
+	if len(k) > maxKeyLength {
+		return fmt.Errorf("key too long: %d bytes (max %d)", len(k), maxKeyLength)
 	}
-
 	return nil
 }
 
 // keyToFilename converts a cache key to a filename with squid-style directory layout.
 // Hashes the key and uses first 2 characters of hex hash as subdirectory for even distribution
-// (e.g., key "http://example.com" -> "a3/a3f2...gob").
-func (*Store[K, V]) keyToFilename(key K) string {
-	s := fmt.Sprintf("%v", key)
-	sum := sha256.Sum256([]byte(s))
+// (e.g., key "mykey" -> "a3/a3f2....j" or "a3/a3f2....s" with S2 compression).
+func (s *Store[K, V]) keyToFilename(key K) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%v", key))
 	h := hex.EncodeToString(sum[:])
-
-	// Squid-style: use first 2 chars of hash as subdirectory
-	return filepath.Join(h[:2], h+".gob")
+	return filepath.Join(h[:2], h+s.ext)
 }
 
 // Location returns the full file path where a key is stored.
@@ -146,37 +128,27 @@ func (s *Store[K, V]) Get(ctx context.Context, key K) (value V, expiry time.Time
 	var zero V
 	fn := filepath.Join(s.Dir, s.keyToFilename(key))
 
-	f, err := os.Open(fn)
+	data, err := os.ReadFile(fn)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return zero, time.Time{}, false, nil
 		}
-		return zero, time.Time{}, false, fmt.Errorf("open file: %w", err)
+		return zero, time.Time{}, false, fmt.Errorf("read file: %w", err)
 	}
 
-	r, ok := readerPool.Get().(*bufio.Reader)
-	if !ok {
-		r = bufio.NewReaderSize(f, 4096)
+	jsonData, err := s.compressor.Decode(data)
+	if err != nil {
+		rmErr := os.Remove(fn)
+		return zero, time.Time{}, false, errors.Join(fmt.Errorf("decompress: %w", err), rmErr)
 	}
-	r.Reset(f)
 
 	var e Entry[K, V]
-	decErr := gob.NewDecoder(r).Decode(&e)
-
-	readerPool.Put(r)
-	closeErr := f.Close()
-
-	if decErr != nil {
+	if err := json.Unmarshal(jsonData, &e); err != nil {
 		rmErr := os.Remove(fn)
 		return zero, time.Time{}, false, errors.Join(
-			fmt.Errorf("decode file: %w", decErr),
-			closeErr,
+			fmt.Errorf("decode file: %w", err),
 			rmErr,
 		)
-	}
-
-	if closeErr != nil {
-		return zero, time.Time{}, false, fmt.Errorf("close file: %w", closeErr)
 	}
 
 	if !e.Expiry.IsZero() && time.Now().After(e.Expiry) {
@@ -222,38 +194,20 @@ func (s *Store[K, V]) Set(ctx context.Context, key K, value V, expiry time.Time)
 		UpdatedAt: time.Now(),
 	}
 
+	jsonData, err := json.Marshal(e)
+	if err != nil {
+		return fmt.Errorf("encode entry: %w", err)
+	}
+
+	data, err := s.compressor.Encode(jsonData)
+	if err != nil {
+		return fmt.Errorf("compress: %w", err)
+	}
+
 	// Write to temp file first, then rename for atomicity
 	tmp := fn + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-
-	// Get writer from pool and reset it for this file
-	w, ok := writerPool.Get().(*bufio.Writer)
-	if !ok {
-		w = bufio.NewWriterSize(f, 4096)
-	}
-	w.Reset(f)
-
-	encErr := gob.NewEncoder(w).Encode(e)
-	if encErr == nil {
-		encErr = w.Flush() // Ensure buffered data is written
-	}
-
-	// Return writer to pool
-	writerPool.Put(w)
-
-	closeErr := f.Close()
-
-	if encErr != nil {
-		rmErr := os.Remove(tmp)
-		return errors.Join(fmt.Errorf("encode entry: %w", encErr), rmErr)
-	}
-
-	if closeErr != nil {
-		rmErr := os.Remove(tmp)
-		return errors.Join(fmt.Errorf("close temp file: %w", closeErr), rmErr)
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
 	}
 
 	// Atomic rename
@@ -272,6 +226,11 @@ func (s *Store[K, V]) Delete(ctx context.Context, key K) error {
 		return fmt.Errorf("remove file: %w", err)
 	}
 	return nil
+}
+
+// isCacheFile returns true if the file matches the store's cache file extension.
+func (s *Store[K, V]) isCacheFile(name string) bool {
+	return filepath.Ext(name) == s.ext
 }
 
 // Cleanup removes expired entries from file storage.
@@ -296,41 +255,26 @@ func (s *Store[K, V]) Cleanup(ctx context.Context, maxAge time.Duration) (int, e
 			return nil
 		}
 
-		// Skip directories and non-gob files
-		if fi.IsDir() || filepath.Ext(fi.Name()) != ".gob" {
+		// Skip directories and non-matching files
+		if fi.IsDir() || !s.isCacheFile(fi.Name()) {
 			return nil
 		}
 
-		// Read and check expiry
-		f, err := os.Open(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("open %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("read %s: %w", path, err))
 			return nil
 		}
 
-		// Get reader from pool
-		r, ok := readerPool.Get().(*bufio.Reader)
-		if !ok {
-			r = bufio.NewReaderSize(f, 4096)
+		jsonData, err := s.compressor.Decode(data)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("decompress %s: %w", path, err))
+			return nil
 		}
-		r.Reset(f)
 
 		var e Entry[K, V]
-		decErr := gob.NewDecoder(r).Decode(&e)
-
-		readerPool.Put(r)
-		closeErr := f.Close()
-
-		if decErr != nil {
-			errs = append(errs, errors.Join(
-				fmt.Errorf("decode %s: %w", path, decErr),
-				closeErr,
-			))
-			return nil
-		}
-
-		if closeErr != nil {
-			errs = append(errs, fmt.Errorf("close %s: %w", path, closeErr))
+		if err := json.Unmarshal(jsonData, &e); err != nil {
+			errs = append(errs, fmt.Errorf("decode %s: %w", path, err))
 			return nil
 		}
 
@@ -369,7 +313,7 @@ func (s *Store[K, V]) Flush(ctx context.Context) (int, error) {
 			errs = append(errs, fmt.Errorf("walk %s: %w", path, err))
 			return nil
 		}
-		if fi.IsDir() || filepath.Ext(fi.Name()) != ".gob" {
+		if fi.IsDir() || !s.isCacheFile(fi.Name()) {
 			return nil
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -406,7 +350,7 @@ func (s *Store[K, V]) Len(ctx context.Context) (int, error) {
 			errs = append(errs, err)
 			return nil
 		}
-		if fi.IsDir() || filepath.Ext(fi.Name()) != ".gob" {
+		if fi.IsDir() || !s.isCacheFile(fi.Name()) {
 			return nil
 		}
 		n++

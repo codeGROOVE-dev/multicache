@@ -11,8 +11,11 @@ tag:
 	@echo ""
 	@echo "Step 1: Update submodule go.mod files to require sfcache $(VERSION)..."
 	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache v[^ ]*|github.com/codeGROOVE-dev/sfcache $(VERSION)|' {}
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist/localfs $(VERSION)|' {}
-	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/persist/datastore v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/persist/datastore $(VERSION)|' {}
+	@# Update store submodule dependencies (compress must be first as others depend on it)
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/store/compress v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/store/compress $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/store/localfs v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/store/localfs $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/store/datastore v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/store/datastore $(VERSION)|' {}
+	@find . -path ./go.mod -prune -o -name go.mod -print | xargs -I{} sed -i '' 's|github.com/codeGROOVE-dev/sfcache/pkg/store/valkey v[^ ]*|github.com/codeGROOVE-dev/sfcache/pkg/store/valkey $(VERSION)|' {}
 	@echo ""
 	@echo "Step 2: Commit go.mod changes..."
 	@git add -A
@@ -21,7 +24,10 @@ tag:
 	@echo "Step 3: Create and push tags..."
 	@git tag -a $(VERSION) -m "$(VERSION)" --force
 	@git push origin $(VERSION) --force
-	@# Push submodule tags in dependency order (cloudrun depends on datastore and localfs)
+	@# Push submodule tags in dependency order:
+	@# - compress first (localfs, datastore, valkey depend on it)
+	@# - cloudrun last (depends on datastore and localfs)
+	@# Note: alphabetical sort naturally orders compress before datastore/localfs/valkey
 	@for mod in $$(find . -name go.mod -not -path "./go.mod" | sort | grep -v cloudrun) $$(find . -name go.mod -path "*/cloudrun/*"); do \
 		dir=$$(dirname $$mod); \
 		dir=$${dir#./}; \

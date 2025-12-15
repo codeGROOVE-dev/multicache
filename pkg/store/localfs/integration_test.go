@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/codeGROOVE-dev/sfcache/pkg/store/compress"
 )
 
 func TestFilePersist_StoreLoad(t *testing.T) {
@@ -277,9 +280,10 @@ func TestFilePersist_ValidateKey(t *testing.T) {
 		{"valid with colon", "key:123", false},
 		{"key at max length", string(validMaxKey), false},
 		{"key too long", string(make([]byte, 128)), true},
-		{"key with space", "my key", true},
-		{"key with unicode", "key-日本語", true}, //nolint:gosmopolitan // Testing unicode handling
-		{"key with slash", "key/123", true},
+		{"key with space", "my key", false},                   // Valid - keys are hashed
+		{"key with unicode", "key-\u65e5\u672c\u8a9e", false}, // Valid - keys are hashed
+		{"key with slash", "key/123", false},                  // Valid - keys are hashed
+		{"empty key", "", true},                               // Empty keys are invalid
 	}
 
 	for _, tt := range tests {
@@ -721,15 +725,15 @@ func TestFilePersist_Flush_RemovesFiles(t *testing.T) {
 		}
 	}
 
-	// Count .gob files on disk before flush
-	countGobFiles := func() int {
+	// Count .j files on disk before flush (default: no compression = .j)
+	countCacheFiles := func() int {
 		count := 0
 		//nolint:errcheck // WalkDir errors are handled by returning nil to continue walking
 		_ = filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil //nolint:nilerr // Intentionally continue walking on errors
 			}
-			if !d.IsDir() && filepath.Ext(path) == ".gob" {
+			if !d.IsDir() && filepath.Ext(path) == ".j" {
 				count++
 			}
 			return nil
@@ -737,9 +741,9 @@ func TestFilePersist_Flush_RemovesFiles(t *testing.T) {
 		return count
 	}
 
-	beforeFlush := countGobFiles()
+	beforeFlush := countCacheFiles()
 	if beforeFlush != 10 {
-		t.Errorf("expected 10 .gob files before flush, got %d", beforeFlush)
+		t.Errorf("expected 10 .j files before flush, got %d", beforeFlush)
 	}
 
 	// Flush
@@ -751,10 +755,10 @@ func TestFilePersist_Flush_RemovesFiles(t *testing.T) {
 		t.Errorf("Flush deleted %d entries; want 10", deleted)
 	}
 
-	// Verify no .gob files remain
-	afterFlush := countGobFiles()
+	// Verify no .j files remain
+	afterFlush := countCacheFiles()
 	if afterFlush != 0 {
-		t.Errorf("expected 0 .gob files after flush, got %d", afterFlush)
+		t.Errorf("expected 0 .j files after flush, got %d", afterFlush)
 	}
 }
 
@@ -915,5 +919,390 @@ func TestFilePersist_Len_NewStoreSameDir(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("Len() = %d; want 0 after Flush", n)
+	}
+}
+
+// Compression feature tests
+
+func TestFilePersist_Compression_S2(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir, compress.S2())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set and get
+	if err := fp.Set(ctx, "key1", "value1", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	val, _, found, err := fp.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != "value1" {
+		t.Errorf("Get value = %s; want value1", val)
+	}
+
+	// Verify file has .s extension
+	loc := fp.Location("key1")
+	if !strings.HasSuffix(loc, ".s") {
+		t.Errorf("Location = %s; want .s suffix", loc)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(loc); err != nil {
+		t.Errorf("file should exist: %v", err)
+	}
+}
+
+func TestFilePersist_Compression_Zstd(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir, compress.Zstd(1))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set and get
+	if err := fp.Set(ctx, "key1", "value1", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	val, _, found, err := fp.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != "value1" {
+		t.Errorf("Get value = %s; want value1", val)
+	}
+
+	// Verify file has .z extension
+	loc := fp.Location("key1")
+	if !strings.HasSuffix(loc, ".z") {
+		t.Errorf("Location = %s; want .z suffix", loc)
+	}
+}
+
+func TestFilePersist_Compression_None(t *testing.T) {
+	dir := t.TempDir()
+	fp, err := New[string, string]("test", dir, compress.None())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// Set and get
+	if err := fp.Set(ctx, "key1", "value1", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	val, _, found, err := fp.Get(ctx, "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatal("key1 not found")
+	}
+	if val != "value1" {
+		t.Errorf("Get value = %s; want value1", val)
+	}
+
+	// Verify file has .j extension (default for no compression)
+	loc := fp.Location("key1")
+	if !strings.HasSuffix(loc, ".j") {
+		t.Errorf("Location = %s; want .j suffix", loc)
+	}
+
+	// Verify file contains readable JSON
+	data, err := os.ReadFile(loc)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "value1") {
+		t.Error("file should contain readable JSON with value1")
+	}
+}
+
+func TestFilePersist_Compression_DefaultIsNone(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create store without compression arg
+	fp1, err := New[string, string]("test1", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Create store with explicit None
+	fp2, err := New[string, string]("test2", dir, compress.None())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	defer func() {
+		_ = fp1.Close() //nolint:errcheck // test cleanup
+		_ = fp2.Close() //nolint:errcheck // test cleanup
+	}()
+
+	// Both should have .j extension
+	loc1 := fp1.Location("key")
+	loc2 := fp2.Location("key")
+
+	if !strings.HasSuffix(loc1, ".j") {
+		t.Errorf("default should have .j extension, got %s", loc1)
+	}
+	if !strings.HasSuffix(loc2, ".j") {
+		t.Errorf("explicit None should have .j extension, got %s", loc2)
+	}
+}
+
+func TestFilePersist_Compression_ActuallyCompresses(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Large compressible value
+	largeValue := strings.Repeat("the quick brown fox jumps over the lazy dog ", 1000)
+
+	// Store without compression
+	fpNone, err := New[string, string]("none", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := fpNone.Set(ctx, "key", largeValue, time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	noneFile := fpNone.Location("key")
+	noneStat, err := os.Stat(noneFile)
+	if err != nil {
+		t.Fatalf("Stat none file: %v", err)
+	}
+
+	// Store with S2 compression
+	fpS2, err := New[string, string]("s2", dir, compress.S2())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := fpS2.Set(ctx, "key", largeValue, time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s2File := fpS2.Location("key")
+	s2Stat, err := os.Stat(s2File)
+	if err != nil {
+		t.Fatalf("Stat s2 file: %v", err)
+	}
+
+	// Store with Zstd compression
+	fpZstd, err := New[string, string]("zstd", dir, compress.Zstd(3))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := fpZstd.Set(ctx, "key", largeValue, time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	zstdFile := fpZstd.Location("key")
+	zstdStat, err := os.Stat(zstdFile)
+	if err != nil {
+		t.Fatalf("Stat zstd file: %v", err)
+	}
+
+	defer func() {
+		_ = fpNone.Close() //nolint:errcheck // test cleanup
+		_ = fpS2.Close()   //nolint:errcheck // test cleanup
+		_ = fpZstd.Close() //nolint:errcheck // test cleanup
+	}()
+
+	t.Logf("File sizes: none=%d, s2=%d, zstd=%d", noneStat.Size(), s2Stat.Size(), zstdStat.Size())
+
+	// Compressed files should be smaller
+	if s2Stat.Size() >= noneStat.Size() {
+		t.Errorf("S2 compressed size %d should be less than uncompressed %d", s2Stat.Size(), noneStat.Size())
+	}
+	if zstdStat.Size() >= noneStat.Size() {
+		t.Errorf("Zstd compressed size %d should be less than uncompressed %d", zstdStat.Size(), noneStat.Size())
+	}
+
+	// Verify all can be read back correctly
+	val, _, found, err := fpNone.Get(ctx, "key")
+	if err != nil || !found || val != largeValue {
+		t.Error("None: failed to read back value")
+	}
+
+	val, _, found, err = fpS2.Get(ctx, "key")
+	if err != nil || !found || val != largeValue {
+		t.Error("S2: failed to read back value")
+	}
+
+	val, _, found, err = fpZstd.Get(ctx, "key")
+	if err != nil || !found || val != largeValue {
+		t.Error("Zstd: failed to read back value")
+	}
+}
+
+func TestFilePersist_Compression_IsolatedNamespaces(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Create stores with different compressions in same cache ID
+	fpNone, err := New[string, string]("cache", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fpS2, err := New[string, string]("cache", dir, compress.S2())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	defer func() {
+		_ = fpNone.Close() //nolint:errcheck // test cleanup
+		_ = fpS2.Close()   //nolint:errcheck // test cleanup
+	}()
+
+	// Set same key with different values
+	if err := fpNone.Set(ctx, "key", "value-none", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := fpS2.Set(ctx, "key", "value-s2", time.Time{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Each store should see its own value
+	val, _, found, err := fpNone.Get(ctx, "key")
+	if err != nil || !found || val != "value-none" {
+		t.Errorf("None store: got %q, want value-none", val)
+	}
+
+	val, _, found, err = fpS2.Get(ctx, "key")
+	if err != nil || !found || val != "value-s2" {
+		t.Errorf("S2 store: got %q, want value-s2", val)
+	}
+
+	// Files should have different extensions
+	locNone := fpNone.Location("key")
+	locS2 := fpS2.Location("key")
+	if locNone == locS2 {
+		t.Error("different compression should result in different file paths")
+	}
+}
+
+func TestFilePersist_Compression_CleanupRespectExtension(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Create S2 store and add entries
+	fp, err := New[string, int]("cache", dir, compress.S2())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := fp.Close(); err != nil {
+			t.Logf("Close error: %v", err)
+		}
+	}()
+
+	// Add entries with past expiry
+	past := time.Now().Add(-2 * time.Hour)
+	for i := range 5 {
+		if err := fp.Set(ctx, fmt.Sprintf("key-%d", i), i, past); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Add entries with future expiry
+	future := time.Now().Add(1 * time.Hour)
+	for i := 5; i < 10; i++ {
+		if err := fp.Set(ctx, fmt.Sprintf("key-%d", i), i, future); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Cleanup
+	count, err := fp.Cleanup(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("Cleanup count = %d; want 5", count)
+	}
+
+	// Verify remaining entries
+	n, err := fp.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("Len = %d; want 5", n)
+	}
+}
+
+func TestFilePersist_Compression_FlushRespectExtension(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Create stores with different compressions in same cache ID
+	fpNone, err := New[string, int]("cache", dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	fpS2, err := New[string, int]("cache", dir, compress.S2())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	defer func() {
+		_ = fpNone.Close() //nolint:errcheck // test cleanup
+		_ = fpS2.Close()   //nolint:errcheck // test cleanup
+	}()
+
+	// Add entries to both stores
+	for i := range 5 {
+		if err := fpNone.Set(ctx, fmt.Sprintf("none-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if err := fpS2.Set(ctx, fmt.Sprintf("s2-%d", i), i, time.Time{}); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// Flush only the None store
+	count, err := fpNone.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("Flush count = %d; want 5", count)
+	}
+
+	// S2 store should still have its entries
+	n, err := fpS2.Len(ctx)
+	if err != nil {
+		t.Fatalf("Len: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("S2 Len = %d; want 5 (should not be affected by None flush)", n)
 	}
 }
