@@ -11,7 +11,7 @@ import (
 	"unsafe"
 )
 
-// debugAdaptive enables adaptive mode debug output when SFCACHE_DEBUG=1
+// debugAdaptive enables adaptive mode debug output when SFCACHE_DEBUG=1.
 var debugAdaptive = os.Getenv("SFCACHE_DEBUG") == "1"
 
 // wyhash constants for fast string hashing.
@@ -123,10 +123,12 @@ type shard[K comparable, V any] struct {
 	// Warmup: during initial fill, admit everything without eviction checks
 	warmupComplete bool
 
-	// Adaptive mode detection based on ghost hit rate:
+	// Adaptive mode detection based on ghost hit rate with hysteresis:
 	// - Mode 0 (scan-heavy, ghost rate < 1%): pure recency, skip ghost tracking
-	// - Mode 1 (balanced, ghost rate 1-5%): lenient promotion (freq > 0)
-	// - Mode 2 (frequency-heavy, ghost rate > 5%): strict promotion (freq > 1)
+	// - Mode 1 (balanced): lenient promotion (freq > 0)
+	// - Mode 2 (frequency-heavy): strict promotion (freq > 1)
+	//   Entry: ghost rate 7-12%. Stay: 5-22%. Exit: <5% or >=23%
+	// - Mode 3 (clock-like, ghost rate >= 23%): all items to main, second-chance
 	insertions            uint32
 	ghostHits             uint32
 	adaptiveMode          uint8  // 0=scan/recency, 1=balanced, 2=frequency-heavy
@@ -478,14 +480,14 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	ent.expiryNano = expiryNano
 
 	// Check if cache is at capacity
-	atCapacity := s.parent.totalEntries.Load() >= int64(s.parent.capacity)
+	full := s.parent.totalEntries.Load() >= int64(s.parent.capacity)
 
 	// Warmup Bypass: During warmup, admit everything to small queue without eviction
-	if !s.warmupComplete && !atCapacity {
+	if !s.warmupComplete && !full {
 		ent.inSmall = true
 		s.small.pushBack(ent)
 		s.entries[key] = ent
-		s.incrementGlobal()
+		s.parent.totalEntries.Add(1)
 		s.mu.Unlock()
 		return
 	}
@@ -494,14 +496,25 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 
 	// Lazily check ghost only if at capacity (when eviction matters)
 	// This saves 2× bloom filter checks + hash computation when cache isn't full
-	if atCapacity {
+	if full {
 		// Track insertions for adaptive mode detection
 		s.insertions++
 
 		// In scan/recency mode (mode=0), skip ghost checks entirely
-		if s.adaptiveMode == 0 {
+		switch s.adaptiveMode {
+		case 0:
 			ent.inSmall = true
-		} else {
+		case 3:
+			// Clock mode: all items go directly to main queue with freq=1
+			// This mimics clock's second-chance behavior for high-recency workloads
+			ent.inSmall = false
+			ent.freq.Store(1)
+			// Still track ghost for mode detection
+			h := s.hasher(key)
+			if s.ghostActive.Contains(h) || s.ghostAging.Contains(h) {
+				s.ghostHits++
+			}
+		default:
 			// Check if key is in ghost (Bloom filter)
 			h := s.hasher(key)
 			inGhost := s.ghostActive.Contains(h) || s.ghostAging.Contains(h)
@@ -517,29 +530,40 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 		}
 
 		// Adaptive mode detection: check every 256 insertions after warmup
-		// Mode 0: scan-heavy (ghost rate < 1%) - pure recency, skip ghost
-		// Mode 1: balanced (ghost rate 1-5% or >10%) - lenient promotion (freq > 0)
-		// Mode 2: frequency-heavy (ghost rate 5-10%) - strict promotion (freq > 1)
+		// Mode 0: scan-heavy (ghost rate < 1%) - pure recency
+		// Mode 1: balanced - lenient promotion (freq > 0)
+		// Mode 2: frequency-heavy - strict promotion (freq > 1)
+		// Mode 3: clock-like (ghost rate >= 23%) - all items to main
 		//
-		// Insight: High ghost rates (>10%) indicate strong recency patterns
-		// where items return quickly - these benefit from lenient promotion (mode 1)
-		// rather than strict frequency requirements (mode 2).
+		// Hysteresis prevents oscillation: entry thresholds differ from exit.
+		// Enter mode 2: 7-12%. Stay in mode 2: 5-22%. Exit: <5% or >=23%.
 		if s.insertions >= s.adaptiveMinInsertions && s.insertions&0xFF == 0 {
-			ghostRate := s.ghostHits * 100 / s.insertions // percentage
-			oldMode := s.adaptiveMode
+			rate := s.ghostHits * 100 / s.insertions // percentage
+			prev := s.adaptiveMode
+
+			// Apply hysteresis: current mode affects switching thresholds
 			switch {
-			case ghostRate < 1:
+			case rate < 1:
 				s.adaptiveMode = 0 // Scan-heavy: use pure recency
-			case ghostRate < 5:
-				s.adaptiveMode = 1 // Balanced: lenient promotion
-			case ghostRate <= 10:
-				s.adaptiveMode = 2 // Frequency-heavy: strict promotion
+			case rate >= 23:
+				s.adaptiveMode = 3 // Very high recency: clock-like behavior
+			case s.adaptiveMode == 2:
+				// In mode 2: use wider band (5-22%) to prevent oscillation
+				if rate < 5 {
+					s.adaptiveMode = 1
+				}
+				// rate >= 23 handled above
 			default:
-				s.adaptiveMode = 1 // High recency: back to lenient (items returning fast)
+				// Not in mode 2: use narrow entry band (7-12%)
+				if rate >= 7 && rate <= 12 {
+					s.adaptiveMode = 2
+				} else {
+					s.adaptiveMode = 1
+				}
 			}
-			if debugAdaptive && s.adaptiveMode != oldMode {
+			if debugAdaptive && s.adaptiveMode != prev {
 				fmt.Printf("[sfcache] mode %d→%d (ghost=%d%%, cap=%d)\n",
-					oldMode, s.adaptiveMode, ghostRate, s.capacity)
+					prev, s.adaptiveMode, rate, s.capacity)
 			}
 			// Reset counters for next period
 			s.insertions = 0
@@ -565,18 +589,8 @@ func (s *shard[K, V]) set(key K, value V, expiryNano int64) {
 	}
 
 	s.entries[key] = ent
-	s.incrementGlobal()
-	s.mu.Unlock()
-}
-
-// incrementGlobal increments the global entry counter.
-func (s *shard[K, V]) incrementGlobal() {
 	s.parent.totalEntries.Add(1)
-}
-
-// decrementGlobal decrements the global entry counter.
-func (s *shard[K, V]) decrementGlobal() {
-	s.parent.totalEntries.Add(-1)
+	s.mu.Unlock()
 }
 
 // del removes a value from the cache.
@@ -601,7 +615,7 @@ func (s *shard[K, V]) delete(key K) {
 
 	delete(s.entries, key)
 	s.putEntry(ent)
-	s.decrementGlobal()
+	s.parent.totalEntries.Add(-1)
 }
 
 // evictFromSmall evicts an entry from the small queue.
@@ -621,13 +635,13 @@ func (s *shard[K, V]) evictFromSmall() {
 
 		if e.freq.Load() < thresh {
 			// Not accessed enough - evict
-			evictedKey := e.key
-			delete(s.entries, evictedKey)
+			k := e.key
+			delete(s.entries, k)
 
 			// Track in ghost queue only if not in scan/recency mode
 			// (scan-heavy workloads don't benefit from ghost tracking)
 			if s.adaptiveMode > 0 {
-				h := s.hasher(evictedKey)
+				h := s.hasher(k)
 				if !s.ghostActive.Contains(h) {
 					s.ghostActive.Add(h)
 				}
@@ -639,7 +653,7 @@ func (s *shard[K, V]) evictFromSmall() {
 			}
 
 			s.putEntry(e)
-			s.decrementGlobal()
+			s.parent.totalEntries.Add(-1)
 			return
 		}
 
@@ -667,7 +681,7 @@ func (s *shard[K, V]) evictFromMain() {
 			// Not accessed - evict (no ghost tracking per S3-FIFO)
 			delete(s.entries, e.key)
 			s.putEntry(e)
-			s.decrementGlobal()
+			s.parent.totalEntries.Add(-1)
 			return
 		}
 
