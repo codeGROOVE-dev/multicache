@@ -1,4 +1,4 @@
-# multicache - Stupid Fast Cache
+# multicache - Adaptive Multi-Tier Cache
 
 <img src="media/logo-small.png" alt="multicache logo" width="256">
 
@@ -8,25 +8,58 @@
 
 <br clear="right">
 
-multicache is the fastest in-memory cache for Go. Need multi-tier persistence? We have it. Need thundering herd protection? We've got that too.
+multicache is a high-performance cache for Go that automatically adapts to your workload. It combines **multiple eviction strategies** that switch based on access patterns, with an optional **multi-tier architecture** for persistence.
 
-Designed for persistently caching API requests in an unreliable environment, this cache has an abundance of production-ready features:
+## Why "multi"?
+
+### Multiple Adaptive Strategies
+
+multicache monitors ghost hit rates (how often evicted keys return) and automatically selects the optimal eviction strategy:
+
+| Mode | Trigger | Strategy | Workload |
+|------|---------|----------|----------|
+| 0 | Ghost rate <1% | Pure recency | Scan-heavy (unique keys) |
+| 1 | Ghost rate 1-22% | Balanced S3-FIFO | Mixed access patterns |
+| 2 | Ghost rate 7-12% | Frequency-biased | Repeated hot keys |
+| 3 | Ghost rate ≥23% | Clock-like second-chance | High temporal locality |
+
+No tuning required - the cache learns your workload and adapts.
+
+### Multi-Tier Architecture
+
+Stack fast in-memory caching with durable persistence:
+
+```
+┌─────────────────────────────────────┐
+│         Your Application            │
+└─────────────────┬───────────────────┘
+                  │
+┌─────────────────▼───────────────────┐
+│    Memory Cache (microseconds)      │  ← L1: S3-FIFO with adaptive modes
+└─────────────────┬───────────────────┘
+                  │ async write / sync read
+┌─────────────────▼───────────────────┐
+│   Persistence Store (milliseconds)  │  ← L2: localfs, Valkey, Datastore
+└─────────────────────────────────────┘
+```
+
+Persistence backends:
+- [`pkg/store/localfs`](pkg/store/localfs) - Local files (JSON, zero dependencies)
+- [`pkg/store/valkey`](pkg/store/valkey) - Valkey/Redis
+- [`pkg/store/datastore`](pkg/store/datastore) - Google Cloud Datastore
+- [`pkg/store/cloudrun`](pkg/store/cloudrun) - Auto-selects Datastore or localfs
+- [`pkg/store/null`](pkg/store/null) - No-op for testing
+
+All backends support optional S2 or Zstd compression via [`pkg/store/compress`](pkg/store/compress).
 
 ## Features
 
-- **Faster than a bat out of hell** - Best-in-class latency and throughput
-- **S3-FIFO eviction** - Better hit-rates than LRU ([learn more](https://s3fifo.com/))
-- **Multi-tier persistent cache (optional)** - Bring your own database or use built-in backends:
-  - [`pkg/store/cloudrun`](pkg/store/cloudrun) - Automatically select Google Cloud Datastore in Cloud Run, localfs elsewhere
-  - [`pkg/store/datastore`](pkg/store/datastore) - Google Cloud Datastore
-  - [`pkg/store/localfs`](pkg/store/localfs) - Local files (JSON encoding, zero dependencies)
-  - [`pkg/store/null`](pkg/store/null) - No-op (for testing or TieredCache API compatibility)
-  - [`pkg/store/valkey`](pkg/store/valkey) - Valkey/Redis
-- **Optional compression** - S2 or Zstd for all persistence backends via [`pkg/store/compress`](pkg/store/compress)
+- **Best-in-class performance** - 7ns reads, 100M+ QPS single-threaded
+- **Adaptive S3-FIFO eviction** - Better hit-rates than LRU ([learn more](https://s3fifo.com/))
+- **Thundering herd prevention** - `GetSet` deduplicates concurrent loads
 - **Per-item TTL** - Optional expiration
-- **Thundering herd prevention** - `GetSet` deduplicates concurrent loads for the same key
 - **Graceful degradation** - Cache works even if persistence fails
-- **Zero allocation updates** - minimal GC thrashing
+- **Zero allocation updates** - Minimal GC pressure
 
 ## Usage
 
@@ -169,34 +202,24 @@ Want even more comprehensive benchmarks? See https://github.com/tstromberg/gocac
 
 ## Implementation Notes
 
-### Differences from the S3-FIFO paper
+### S3-FIFO Enhancements
 
-multicache implements the core S3-FIFO algorithm (Small/Main/Ghost queues with frequency-based promotion) with these optimizations:
+multicache implements the S3-FIFO algorithm from SOSP'23 with these optimizations:
 
-1. **Dynamic Sharding** - 1-2048 independent S3-FIFO shards (vs single-threaded) for concurrent workloads
-2. **Bloom Filter Ghosts** - Two rotating Bloom filters track evicted keys (vs storing actual keys), reducing memory 10-100x
-3. **Lazy Ghost Checks** - Only check ghosts when evicting, saving 5-9% latency when cache isn't full
-4. **Intrusive Lists** - Embed pointers in entries (vs separate nodes) for zero-allocation queue ops
-5. **Fast-path Hashing** - Specialized for `int`/`string` keys using wyhash and bit mixing
+1. **Dynamic Sharding** - 1-2048 independent shards for concurrent workloads
+2. **Bloom Filter Ghosts** - Two rotating Bloom filters (vs storing keys), 10-100x less memory
+3. **Lazy Ghost Checks** - Only check ghosts at capacity, saving 5-9% latency during warmup
+4. **Intrusive Lists** - Zero-allocation queue operations
+5. **Fast-path Hashing** - Specialized `int`/`string` hashing via wyhash
 
-### Adaptive Mode Detection
+### Adaptive Mode Details
 
-multicache automatically detects workload characteristics and adjusts its eviction strategy using ghost hit rate (how often evicted keys are re-requested):
+Mode switching uses **hysteresis** to prevent oscillation. Mode 2 (frequency-biased) requires 7-12% ghost rate to enter, but stays active while rate is 5-22%.
 
-| Mode | Ghost Rate | Strategy | Best For |
-|------|------------|----------|----------|
-| 0 | <1% | Pure recency, skip ghost tracking | Scan-heavy workloads |
-| 1 | 1-6% or 13-22% | Balanced, promote if freq > 0 | Mixed workloads |
-| 2 | 7-12% | Frequency-heavy, promote if freq > 1 | Frequency-skewed workloads |
-| 3 | ≥23% | Clock-like, all items to main with second-chance | High-recency workloads |
-
-Mode 2 uses **hysteresis** to prevent oscillation: entry requires 7-12% ghost rate, but stays active while rate is 5-22%.
-
-### Other Optimizations
-
-- **Adaptive Queue Sizing** - Small queue is 20% for caches ≤32K, 15% for ≤128K, 10% for larger (paper recommends 10%)
-- **Ghost Frequency Boost** - Items returning from ghost start with freq=1 instead of 0
-- **Higher Frequency Cap** - Max freq=7 (vs 3 in paper) for better hot/warm discrimination
+Additional tuning beyond the paper:
+- **Adaptive queue sizing** - Small queue is 20% for caches ≤32K, 15% for ≤128K, 10% for larger
+- **Ghost frequency boost** - Returning items start with freq=1 instead of 0
+- **Higher frequency cap** - Max freq=7 (vs 3) for better hot/warm discrimination
 
 ## License
 
