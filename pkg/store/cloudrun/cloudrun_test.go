@@ -277,9 +277,9 @@ func TestNew_ValidateKey(t *testing.T) {
 		t.Errorf("ValidateKey() should accept valid key: %v", err)
 	}
 
-	// Test invalid character
-	if err := p.ValidateKey("key/with/slash"); err == nil {
-		t.Error("ValidateKey() should reject key with slash")
+	// Keys with slashes are valid since keys are hashed to SHA256
+	if err := p.ValidateKey("key/with/slash"); err != nil {
+		t.Errorf("ValidateKey() should accept key with slash (hashed): %v", err)
 	}
 
 	// Test very long key (> 127 chars for localfs)
@@ -289,6 +289,11 @@ func TestNew_ValidateKey(t *testing.T) {
 	}
 	if err := p.ValidateKey(longKey); err == nil {
 		t.Error("ValidateKey() should reject very long key")
+	}
+
+	// Test empty key
+	if err := p.ValidateKey(""); err == nil {
+		t.Error("ValidateKey() should reject empty key")
 	}
 }
 

@@ -1,6 +1,9 @@
 package sfcache
 
-import "math"
+import (
+	"math"
+	"math/bits"
+)
 
 // bloomFilter is a space-efficient probabilistic data structure.
 type bloomFilter struct {
@@ -26,7 +29,8 @@ func newBloomFilter(capacity int, fpRate float64) *bloomFilter {
 	m := float64(capacity) * -math.Log(fpRate) / (ln2 * ln2)
 
 	// Round m up to nearest power of 2 for fast modulo
-	mInt := max(nextPowerOf2(uint64(m)), 64)
+	mInt := uint64(1) << bits.Len64(uint64(m)-1)
+	mInt = max(mInt, 64)
 
 	// Calculate k
 	// k = (m / n) * ln(2)
@@ -78,21 +82,6 @@ func (b *bloomFilter) Reset() {
 		b.data[i] = 0
 	}
 	b.entries = 0
-}
-
-// nextPowerOf2 returns the next power of 2 greater than or equal to n.
-func nextPowerOf2(n uint64) uint64 {
-	if n == 0 {
-		return 1
-	}
-	n--
-	n |= n >> 1
-	n |= n >> 2
-	n |= n >> 4
-	n |= n >> 8
-	n |= n >> 16
-	n |= n >> 32
-	return n + 1
 }
 
 // hashInt64 is a fast hash for int64 keys.

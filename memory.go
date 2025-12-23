@@ -14,6 +14,7 @@ type MemoryCache[K comparable, V any] struct {
 	flights    [numFlightShards]flightGroup[K, V]
 	memory     *s3fifo[K, V]
 	defaultTTL time.Duration
+	noExpiry   bool // skip expiry calc when defaultTTL == 0
 }
 
 // flightGroup prevents thundering herd for a set of keys.
@@ -102,6 +103,7 @@ func New[K comparable, V any](opts ...Option) *MemoryCache[K, V] {
 	return &MemoryCache[K, V]{
 		memory:     newS3FIFO[K, V](cfg),
 		defaultTTL: cfg.defaultTTL,
+		noExpiry:   cfg.defaultTTL == 0,
 	}
 }
 
@@ -115,6 +117,11 @@ func (c *MemoryCache[K, V]) Get(key K) (V, bool) {
 // If no TTL is provided, the default TTL is used.
 // If no default TTL is configured, the entry never expires.
 func (c *MemoryCache[K, V]) Set(key K, value V, ttl ...time.Duration) {
+	// Fast path when no TTL is configured and none passed.
+	if c.noExpiry && len(ttl) == 0 {
+		c.memory.set(key, value, 0)
+		return
+	}
 	var t time.Duration
 	if len(ttl) > 0 {
 		t = ttl[0]
@@ -232,16 +239,10 @@ func (c *MemoryCache[K, V]) expiry(ttl time.Duration) time.Time {
 	return time.Now().Add(ttl)
 }
 
-// config holds configuration for both MemoryCache and TieredCache.
+// config holds configuration for MemoryCache.
 type config struct {
 	size       int
 	defaultTTL time.Duration
-
-	// Experimental tuning options (for benchmarking)
-	expAdaptiveSmallRatio bool // Exp1: Scale small queue ratio by cache size
-	expGhostFreqBoost     bool // Exp2: Items entering Main from ghost start with freq=1
-	expAdaptivePromotion  bool // Exp3: Lower promotion threshold under pressure
-	expWarmupBypass       bool // Exp4: Admit all items until cache is full once
 }
 
 func defaultConfig() *config {
@@ -250,7 +251,7 @@ func defaultConfig() *config {
 	}
 }
 
-// Option configures a MemoryCache or TieredCache.
+// Option configures a MemoryCache.
 type Option func(*config)
 
 // Size sets the maximum number of entries in the memory cache.
@@ -267,49 +268,5 @@ func Size(n int) Option {
 func TTL(d time.Duration) Option {
 	return func(c *config) {
 		c.defaultTTL = d
-	}
-}
-
-// Experimental options for benchmarking - not part of public API.
-
-// ExpAdaptiveSmallRatio enables adaptive small queue sizing based on cache capacity.
-// Uses 20% for ≤32K, 15% for ≤128K, 10% for larger caches.
-func ExpAdaptiveSmallRatio() Option {
-	return func(c *config) {
-		c.expAdaptiveSmallRatio = true
-	}
-}
-
-// ExpGhostFreqBoost gives items entering Main from ghost a frequency boost (freq=1).
-// Rewards items that have proven popularity via access→evict→re-access cycle.
-func ExpGhostFreqBoost() Option {
-	return func(c *config) {
-		c.expGhostFreqBoost = true
-	}
-}
-
-// ExpAdaptivePromotion lowers the promotion threshold when small queue is under pressure.
-// Promotes items with freq>0 (instead of freq>1) when small queue is >80% full.
-func ExpAdaptivePromotion() Option {
-	return func(c *config) {
-		c.expAdaptivePromotion = true
-	}
-}
-
-// ExpWarmupBypass admits all items without eviction until cache reaches capacity once.
-// Ensures we use full capacity before making eviction decisions.
-func ExpWarmupBypass() Option {
-	return func(c *config) {
-		c.expWarmupBypass = true
-	}
-}
-
-// ExpAll enables all experimental optimizations.
-func ExpAll() Option {
-	return func(c *config) {
-		c.expAdaptiveSmallRatio = true
-		c.expGhostFreqBoost = true
-		c.expAdaptivePromotion = true
-		c.expWarmupBypass = true
 	}
 }

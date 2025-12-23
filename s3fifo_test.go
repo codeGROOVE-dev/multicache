@@ -645,15 +645,15 @@ func TestS3FIFO_VariousKeyTypes(t *testing.T) {
 	})
 }
 
-// TestS3FIFO_FrequencyCapAt3 tests that frequency counter is capped at 3.
+// TestS3FIFO_FrequencyCapAt7 tests that frequency counter is capped at 7.
 // This is a critical S3-FIFO parameter that affects promotion behavior.
-func TestS3FIFO_FrequencyCapAt3(t *testing.T) {
+func TestS3FIFO_FrequencyCapAt7(t *testing.T) {
 	cache := newS3FIFO[string, int](&config{size: 100})
 
 	// Insert a key
 	cache.set("hot", 1, 0)
 
-	// Access it many times (well beyond 3)
+	// Access it many times (well beyond 7)
 	for range 20 {
 		cache.get("hot")
 	}
@@ -669,11 +669,11 @@ func TestS3FIFO_FrequencyCapAt3(t *testing.T) {
 	}
 
 	freq := ent.freq.Load()
-	if freq > 3 {
-		t.Errorf("frequency = %d; want <= 3 (should be capped at 3)", freq)
+	if freq > 7 {
+		t.Errorf("frequency = %d; want <= 7 (should be capped at 7)", freq)
 	}
-	if freq != 3 {
-		t.Logf("frequency = %d (expected 3, but may vary due to timing)", freq)
+	if freq != 7 {
+		t.Logf("frequency = %d (expected 7, but may vary due to timing)", freq)
 	}
 }
 

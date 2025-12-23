@@ -614,3 +614,38 @@ func TestMemoryCache_GetSet_IntKeys(t *testing.T) {
 		t.Errorf("loader calls = %d; want 10 (one per unique key)", loaderCalls)
 	}
 }
+
+func TestMemoryCache_CapacityEfficiency(t *testing.T) {
+	// Test that cache stores a minimum percentage of requested capacity.
+	// Larger caches should have better efficiency since hash distribution
+	// variance is diluted over more entries per shard.
+	tests := []struct {
+		size          int
+		minEfficiency float64 // minimum acceptable efficiency
+	}{
+		{1000, 0.95},   // Small caches: 95% min
+		{16384, 0.97},  // Default size: 97% min
+		{65536, 0.985}, // Large: 98.5% min
+		{131072, 0.99}, // Very large: 99% min
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("size_%d", tc.size), func(t *testing.T) {
+			cache := New[int, int](Size(tc.size))
+			defer cache.Close()
+
+			// Fill to capacity
+			for i := range tc.size {
+				cache.Set(i, i)
+			}
+
+			stored := cache.Len()
+			efficiency := float64(stored) / float64(tc.size)
+
+			if efficiency < tc.minEfficiency {
+				t.Errorf("capacity efficiency = %.1f%%; want >= %.1f%% (stored %d of %d)",
+					efficiency*100, tc.minEfficiency*100, stored, tc.size)
+			}
+		})
+	}
+}

@@ -20,7 +20,6 @@ func main() {
 	valSize := flag.Int("valSize", 1024, "value size")
 	flag.Parse()
 
-	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	debug.FreeOSMemory()
 
@@ -37,10 +36,8 @@ func main() {
 
 	keepAlive = cache
 
-	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	time.Sleep(100 * time.Millisecond)
-	//nolint:revive // explicit GC required for accurate memory benchmarking
 	runtime.GC()
 	debug.FreeOSMemory()
 

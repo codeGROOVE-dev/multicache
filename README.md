@@ -179,6 +179,16 @@ sfcache implements the core S3-FIFO algorithm (Small/Main/Ghost queues with freq
 4. **Intrusive Lists** - Embed pointers in entries (vs separate nodes) for zero-allocation queue ops
 5. **Fast-path Hashing** - Specialized for `int`/`string` keys using wyhash and bit mixing
 
+### Adaptive Enhancements
+
+Beyond the core algorithm, sfcache includes optimizations discovered through benchmarking:
+
+- **Scan Detection** - If ghost hit rate <5%, switches to pure recency mode (matches Clock on scan-heavy traces)
+- **Adaptive Queue Sizing** - Larger small queue (20%) for small caches, paper's 10% for large
+- **Ghost Boost** - Returning items start with freq=1 instead of 0
+- **Pressure-Aware Promotion** - Lowers threshold when small queue >80% full
+- **Higher Frequency Cap** - Max freq=7 (vs 3 in paper) for better hot/warm discrimination
+
 ## License
 
 Apache 2.0
