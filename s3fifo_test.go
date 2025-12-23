@@ -832,19 +832,17 @@ func TestS3FIFO_EvictionTriggerBoundary(t *testing.T) {
 
 // TestS3FIFO_GhostQueuePromotion tests that items in ghost queue are promoted to main.
 func TestS3FIFO_GhostQueuePromotion(t *testing.T) {
-	capacity := 100
+	// Use larger capacity so ghost doesn't rotate too quickly
+	capacity := 1000
 	cache := newS3FIFO[int, int](&config{size: capacity})
 
-	// Fill cache
+	// Fill cache (don't access key 0 - we want it evicted with freq=0)
 	for i := range capacity {
 		cache.set(i, i, 0)
 	}
 
-	// Access key 0 once to put in small queue
-	cache.get(0)
-
-	// Add many more items to evict key 0 (it should go to ghost)
-	for i := capacity; i < capacity*2; i++ {
+	// Add just enough items to evict key 0 (50% of capacity to avoid ghost rotation)
+	for i := capacity; i < capacity+capacity/2; i++ {
 		cache.set(i, i, 0)
 	}
 

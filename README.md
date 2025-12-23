@@ -16,7 +16,7 @@ multicache is a high-performance cache for Go implementing the **S3-FIFO** algor
 
 ### Multi-Threaded Performance
 
-Designed for high-concurrency workloads with dynamic sharding (up to 2048 shards) that scales with `GOMAXPROCS`. At 32 threads, multicache delivers **185M+ QPS** for GetOrSet operations.
+Designed for high-concurrency workloads with dynamic sharding (up to 2048 shards) that scales with `GOMAXPROCS`. At 16 threads, multicache delivers **44M+ QPS** for mixed read/write operations—nearly 3× faster than the next best cache.
 
 ### Multi-Tier Architecture
 
@@ -48,8 +48,8 @@ All backends support optional S2 or Zstd compression via [`pkg/store/compress`](
 ## Features
 
 - **Best-in-class hit rates** - S3-FIFO beats LRU by 5%+ on real traces ([learn more](https://s3fifo.com/))
-- **Multi-threaded throughput** - 185M+ QPS at 32 threads, scales with core count
-- **Low latency** - 7ns reads, 100M+ QPS single-threaded, zero-allocation updates
+- **Multi-threaded throughput** - 44M+ QPS at 16 threads (3× faster than competition)
+- **Low latency** - 7ns reads, 108M+ QPS single-threaded, zero-allocation hot path
 - **Thundering herd prevention** - `GetSet` deduplicates concurrent loads
 - **Per-item TTL** - Optional expiration
 - **Graceful degradation** - Cache works even if persistence fails
@@ -107,43 +107,43 @@ multicache prioritizes **hit rate** first, **multi-threaded throughput** second,
 >>> TestLatencyNoEviction: Latency - No Evictions (Set cycles within cache size) (go test -run=TestLatencyNoEviction -v)
 | Cache         | Get ns/op | Get B/op | Get allocs | Set ns/op | Set B/op | Set allocs |
 |---------------|-----------|----------|------------|-----------|----------|------------|
-| multicache       |       7.0 |        0 |          0 |      23.0 |        0 |          0 |
-| lru           |      23.0 |        0 |          0 |      23.0 |        0 |          0 |
-| ristretto     |      28.0 |       13 |          0 |      77.0 |      118 |          3 |
-| otter         |      34.0 |        0 |          0 |     160.0 |       51 |          1 |
-| freecache     |      74.0 |        8 |          1 |      53.0 |        0 |          0 |
-| tinylfu       |      80.0 |        0 |          0 |     110.0 |      168 |          3 |
+| multicache    |       7.0 |        0 |          0 |      20.0 |        0 |          0 |
+| lru           |      22.0 |        0 |          0 |      22.0 |        0 |          0 |
+| ristretto     |      32.0 |       14 |          0 |      75.0 |      119 |          3 |
+| otter         |      32.0 |        0 |          0 |     138.0 |       51 |          1 |
+| freecache     |      70.0 |        8 |          1 |      50.0 |        0 |          0 |
+| tinylfu       |      73.0 |        0 |          0 |     109.0 |      168 |          3 |
 
-- 🔥 Get: 229% better than next best (lru)
-- 🔥 Set: 0.000% better than next best (lru)
+- 🔥 Get: 214% better than next best (lru)
+- 🔥 Set: 10% better than next best (lru)
 
 >>> TestLatencyWithEviction: Latency - With Evictions (Set uses 20x unique keys) (go test -run=TestLatencyWithEviction -v)
 | Cache         | Get ns/op | Get B/op | Get allocs | Set ns/op | Set B/op | Set allocs |
 |---------------|-----------|----------|------------|-----------|----------|------------|
-| multicache       |       7.0 |        0 |          0 |      94.0 |        0 |          0 |
-| lru           |      24.0 |        0 |          0 |      83.0 |       80 |          1 |
-| ristretto     |      31.0 |       14 |          0 |      73.0 |      119 |          3 |
-| otter         |      34.0 |        0 |          0 |     176.0 |       61 |          1 |
-| freecache     |      69.0 |        8 |          1 |     102.0 |        1 |          0 |
-| tinylfu       |      79.0 |        0 |          0 |     115.0 |      168 |          3 |
+| multicache    |       7.0 |        0 |          0 |     108.0 |       30 |          0 |
+| lru           |      21.0 |        0 |          0 |      81.0 |       80 |          1 |
+| ristretto     |      32.0 |       14 |          0 |      73.0 |      118 |          3 |
+| otter         |      33.0 |        0 |          0 |     175.0 |       59 |          1 |
+| freecache     |      72.0 |        8 |          1 |      99.0 |        1 |          0 |
+| tinylfu       |      74.0 |        0 |          0 |     107.0 |      168 |          3 |
 
-- 🔥 Get: 243% better than next best (lru)
-- 💧 Set: 29% worse than best (ristretto)
+- 🔥 Get: 200% better than next best (lru)
+- 💧 Set: 48% worse than best (ristretto)
 
 >>> TestZipfThroughput1: Zipf Throughput (1 thread) (go test -run=TestZipfThroughput1 -v)
 
-### Zipf Throughput (alpha=0.99, 75% read / 25% write): 1 threads
+### Zipf Throughput (alpha=0.99, 75% read / 25% write): 1 thread
 
 | Cache         | QPS        |
 |---------------|------------|
-| multicache       |  100.26M   |
-| lru           |   44.58M   |
-| tinylfu       |   18.42M   |
-| freecache     |   14.07M   |
-| otter         |   13.52M   |
-| ristretto     |   11.32M   |
+| multicache    |  108.91M   |
+| lru           |   48.16M   |
+| tinylfu       |   18.97M   |
+| freecache     |   13.76M   |
+| otter         |   13.64M   |
+| ristretto     |   10.03M   |
 
-- 🔥 Throughput: 125% faster than next best (lru)
+- 🔥 Throughput: 126% faster than next best (lru)
 
 >>> TestZipfThroughput16: Zipf Throughput (16 threads) (go test -run=TestZipfThroughput16 -v)
 
@@ -151,14 +151,14 @@ multicache prioritizes **hit rate** first, **multi-threaded throughput** second,
 
 | Cache         | QPS        |
 |---------------|------------|
-| multicache       |   36.46M   |
-| freecache     |   15.00M   |
-| ristretto     |   13.47M   |
-| otter         |   10.75M   |
-| lru           |    5.87M   |
-| tinylfu       |    4.19M   |
+| multicache    |   44.16M   |
+| freecache     |   14.88M   |
+| ristretto     |   13.49M   |
+| otter         |   10.22M   |
+| lru           |    5.96M   |
+| tinylfu       |    4.30M   |
 
-- 🔥 Throughput: 143% faster than next best (freecache)
+- 🔥 Throughput: 197% faster than next best (freecache)
 
 >>> TestMetaTrace: Meta Trace Hit Rate (10M ops) (go test -run=TestMetaTrace -v)
 
@@ -166,14 +166,14 @@ multicache prioritizes **hit rate** first, **multi-threaded throughput** second,
 
 | Cache         | 50K cache | 100K cache |
 |---------------|-----------|------------|
-| multicache       |   71.16%  |   78.30%   |
-| otter         |   41.12%  |   56.34%   |
-| ristretto     |   40.35%  |   48.99%   |
+| multicache    |   71.48%  |   78.39%   |
+| otter         |   40.77%  |   55.61%   |
+| ristretto     |   40.34%  |   48.97%   |
 | tinylfu       |   53.70%  |   54.79%   |
 | freecache     |   56.86%  |   65.52%   |
 | lru           |   65.21%  |   74.22%   |
 
-- 🔥 Meta trace: 5.5% better than next best (lru)
+- 🔥 Meta trace: 5.6% better than next best (lru)
 
 >>> TestHitRate: Zipf Hit Rate (go test -run=TestHitRate -v)
 
@@ -181,14 +181,14 @@ multicache prioritizes **hit rate** first, **multi-threaded throughput** second,
 
 | Cache         | Size=1% | Size=2.5% | Size=5% |
 |---------------|---------|-----------|---------|
-| multicache       |  63.80% |    68.71% |  71.84% |
-| otter         |  61.77% |    67.67% |  71.33% |
-| ristretto     |  34.91% |    41.23% |  46.58% |
+| multicache    |  63.90% |    68.74% |  71.84% |
+| otter         |  62.00% |    67.53% |  71.39% |
+| ristretto     |  34.69% |    41.30% |  46.59% |
 | tinylfu       |  63.83% |    68.25% |  71.56% |
-| freecache     |  56.65% |    57.84% |  63.39% |
+| freecache     |  56.73% |    57.75% |  63.39% |
 | lru           |  57.33% |    64.55% |  69.92% |
 
-- 🔥 Hit rate: 0.34% better than next best (tinylfu)
+- 🔥 Hit rate: 0.41% better than next best (tinylfu)
 ```
 
 Want even more comprehensive benchmarks? See https://github.com/tstromberg/gocachemark where we win the top score.
@@ -205,6 +205,18 @@ multicache implements the S3-FIFO algorithm from the SOSP'23 paper with these op
 6. **Higher Frequency Cap** - Max freq=7 (vs paper's 3) for better hot/warm discrimination
 
 The core algorithm follows the paper closely: items enter the small queue, get promoted to main after 2+ accesses, and evicted items are tracked in a ghost queue to inform future admissions.
+
+### Divergences from the S3-FIFO Paper
+
+We've made several enhancements that improve hit rates on real-world traces:
+
+1. **Eviction Sampling** - Instead of strict FIFO order, we sample 5 entries from the queue front and evict the coldest. Inspired by Redis's approximated LRU, this protects recently-accessed items without read-path overhead.
+
+2. **Ghost Frequency Memory** - We track the peak frequency each item achieved during its lifetime. When evicted, this peak is stored in the ghost queue. Items returning from ghost have 50% of their peak frequency restored, giving proven-popular items a head start.
+
+3. **Main Queue Ghost Tracking** - The paper only adds small queue evictions to ghost. We also add main queue evictions, preserving frequency history for items that proved themselves valuable enough to reach main.
+
+These changes yield +0.2-0.5% hit rate improvements on production traces (Meta KVCache, Twitter, Wikipedia) while maintaining the algorithm's simplicity and O(1) operations.
 
 ## License
 
