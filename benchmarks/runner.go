@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -26,8 +27,8 @@ var hitrateGoals = map[string]float64{
 	"meta":         72.0,
 	"twitter":      84.5,
 	"wikipedia":    30.59,
-	"thesiosBlock": 17.85,
-	"thesiosFile":  88.03,
+	"thesiosBlock": 17.849,
+	"thesiosFile":  88.035,
 	"ibmDocker":    82.95,
 	"tencentPhoto": 19.7,
 }
@@ -126,15 +127,14 @@ func main() {
 	}
 
 	// Validate results.
+	if err := validateHitrate(results); err != nil {
+		fatal("%v", err)
+	}
 	if *competitive {
 		if err := validateCompetitive(results, ref); err != nil {
 			fatal("%v", err)
 		}
 		fmt.Printf("\nResults saved to %s/\n", benchmarksDir)
-	} else {
-		if err := validateHitrate(results); err != nil {
-			fatal("%v", err)
-		}
 	}
 }
 
@@ -245,8 +245,22 @@ type Results struct {
 	HitRate    map[string]json.RawMessage `json:"hitRate"`
 	Latency    map[string]json.RawMessage `json:"latency"`
 	Throughput map[string]json.RawMessage `json:"throughput"`
+	Memory     *MemoryResults             `json:"memory"`
 	Rankings   []RankEntry                `json:"rankings"`
 	MedalTable MedalTable                 `json:"medalTable"`
+}
+
+type MemoryResults struct {
+	Results  []MemoryEntry `json:"results"`
+	Capacity int           `json:"capacity"`
+	ValSize  int           `json:"valSize"`
+}
+
+type MemoryEntry struct {
+	Name         string `json:"name"`
+	Items        int    `json:"items"`
+	Bytes        int64  `json:"bytes"`
+	BytesPerItem int    `json:"bytesPerItem"`
 }
 
 type MedalTable struct {
@@ -259,10 +273,10 @@ type Category struct {
 }
 
 type Benchmark struct {
-	Name   string `json:"name"`
-	Gold   string `json:"gold"`
-	Silver string `json:"silver"`
-	Bronze string `json:"bronze"`
+	Name   string   `json:"name"`
+	Gold   []string `json:"gold"`
+	Silver []string `json:"silver"`
+	Bronze []string `json:"bronze"`
 }
 
 type CacheResult struct {
@@ -344,8 +358,8 @@ func validateHitrate(res *Results) error {
 			continue
 		}
 
-		// Use small tolerance for floating point comparison (0.01%).
-		if avg >= goal-0.01 {
+		// Use tiny tolerance for floating point comparison.
+		if avg >= goal-0.000001 {
 			fmt.Printf("✓ %s: %.2f%% (goal: %.2f%%)\n", name, avg, goal)
 		} else {
 			fmt.Printf("✗ %s: %.2f%% (goal: %.2f%%)\n", name, avg, goal)
@@ -432,6 +446,18 @@ func showDeltas(ref, curr *Results) {
 		fmt.Printf("  throughput/%s: %.2fM → %.2fM (%+.2fM, %+.1f%%)\n", name, refVal/1e6, currVal/1e6, delta/1e6, pct)
 	}
 
+	// Memory delta (lower is better).
+	if ref.Memory != nil && curr.Memory != nil {
+		refVal := findMemory(ref.Memory.Results, "multicache")
+		currVal := findMemory(curr.Memory.Results, "multicache")
+		if refVal > 0 && currVal > 0 {
+			delta := currVal - refVal
+			pct := float64(delta) / float64(refVal) * 100
+			any = true
+			fmt.Printf("  memory/bytesPerItem: %d → %d (%+d, %+.1f%%)\n", refVal, currVal, delta, pct)
+		}
+	}
+
 	if !any {
 		fmt.Println("  (no reference data)")
 	}
@@ -460,6 +486,15 @@ func findThroughput(results []ThroughputResult, name string) float64 {
 	for _, r := range results {
 		if r.Name == name {
 			return r.AvgQps
+		}
+	}
+	return 0
+}
+
+func findMemory(results []MemoryEntry, name string) int {
+	for _, r := range results {
+		if r.Name == name {
+			return r.BytesPerItem
 		}
 	}
 	return 0
@@ -589,12 +624,12 @@ func buildPlacementMap(r *Results) map[string]map[string]placement {
 
 			for cache := range out {
 				var medal string
-				switch cache {
-				case b.Gold:
+				switch {
+				case slices.Contains(b.Gold, cache):
 					medal = "gold"
-				case b.Silver:
+				case slices.Contains(b.Silver, cache):
 					medal = "silver"
-				case b.Bronze:
+				case slices.Contains(b.Bronze, cache):
 					medal = "bronze"
 				}
 				var v float64

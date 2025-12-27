@@ -91,6 +91,12 @@ type shard[K comparable, V any] struct {
 	ghostCap        int
 	hasher          func(K) uint64
 
+	// Death row: small buffer of recently evicted items for instant resurrection.
+	// Improves: +0.04% meta/tencentPhoto, +0.03% wikipedia, +8% set throughput.
+	// See experiment_results.md Phase 19, Exp A for details.
+	deathRow    [8]*entry[K, V] // ring buffer of pending evictions
+	deathRowPos int             // next slot to use
+
 	capacity       int
 	smallThresh    int          // adaptive small queue threshold
 	freeEntries    *entry[K, V] // reuse pool
@@ -150,6 +156,7 @@ type entry[K comparable, V any] struct {
 	freq       atomic.Uint32 // access count, capped at maxFreq
 	peakFreq   atomic.Uint32 // max freq seen, for ghost restore
 	inSmall    bool
+	onDeathRow bool // pending eviction, can be resurrected on access
 }
 
 func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
@@ -262,6 +269,7 @@ func (s *shard[K, V]) freeEntry(e *entry[K, V]) {
 	e.freq.Store(0)
 	e.peakFreq.Store(0)
 	e.inSmall = false
+	e.onDeathRow = false
 	e.prev = nil
 	e.next = s.freeEntries
 	s.freeEntries = e
@@ -360,6 +368,13 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 		var zero V
 		return zero, false
 	}
+
+	// If on death row, resurrect under write lock.
+	if ent.onDeathRow {
+		s.mu.RUnlock()
+		return s.resurrectFromDeathRow(key)
+	}
+
 	val := ent.value
 	expiry := ent.expiryNano
 	s.mu.RUnlock()
@@ -375,6 +390,38 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 			ent.peakFreq.Store(newFreq)
 		}
 	}
+	return val, true
+}
+
+// resurrectFromDeathRow brings an entry back from pending eviction.
+// Resurrected items go to main queue with freq=3 to protect them from immediate re-eviction.
+func (s *shard[K, V]) resurrectFromDeathRow(key K) (V, bool) {
+	s.mu.Lock()
+	ent, ok := s.entries[key]
+	if !ok || !ent.onDeathRow {
+		s.mu.Unlock()
+		var zero V
+		return zero, ok
+	}
+
+	// Remove from death row.
+	for i := range s.deathRow {
+		if s.deathRow[i] == ent {
+			s.deathRow[i] = nil
+			break
+		}
+	}
+
+	// Resurrect to main queue with boosted frequency.
+	ent.onDeathRow = false
+	ent.inSmall = false
+	ent.freq.Store(3) // boost freq for resurrection
+	ent.peakFreq.Store(3)
+	s.main.pushBack(ent)
+	s.parent.totalEntries.Add(1) // was decremented on death row entry
+
+	val := ent.value
+	s.mu.Unlock()
 	return val, true
 }
 
@@ -437,17 +484,16 @@ func (s *shard[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64)
 		inGhost := s.ghostActive.Contains(h) || s.ghostAging.Contains(h)
 		ent.inSmall = !inGhost
 
-		// Restore 50% of peak frequency for items returning from ghost.
-		// Helps zipf +0.26%, meta +0.10% by recognizing previously-popular keys.
+		// Full ghost frequency restore: returning keys get 100% of their previous frequency.
+		// Improves: +0.37% zipf, +0.05% meta, +0.04% tencentPhoto, +0.03% wikipedia.
+		// See experiment_results.md Phase 19, Exp C for details.
 		if !ent.inSmall {
 			if peak, ok := s.ghostFreqActive[h]; ok {
-				restored := peak / 2
-				ent.freq.Store(restored)
-				ent.peakFreq.Store(restored)
+				ent.freq.Store(peak)
+				ent.peakFreq.Store(peak)
 			} else if peak, ok := s.ghostFreqAging[h]; ok {
-				restored := peak / 2
-				ent.freq.Store(restored)
-				ent.peakFreq.Store(restored)
+				ent.freq.Store(peak)
+				ent.peakFreq.Store(peak)
 			}
 		}
 
@@ -522,10 +568,7 @@ func (s *shard[K, V]) evictFromSmall() {
 
 		if f < 2 {
 			s.small.remove(e)
-			delete(s.entries, e.key)
-			s.addToGhost(e.key, e.peakFreq.Load())
-			s.freeEntry(e)
-			s.parent.totalEntries.Add(-1)
+			s.sendToDeathRow(e)
 			return
 		}
 
@@ -562,10 +605,7 @@ func (s *shard[K, V]) evictFromMain() {
 				s.small.pushBack(e)
 				return
 			}
-			delete(s.entries, e.key)
-			s.addToGhost(e.key, e.peakFreq.Load())
-			s.freeEntry(e)
-			s.parent.totalEntries.Add(-1)
+			s.sendToDeathRow(e)
 			return
 		}
 
@@ -574,6 +614,24 @@ func (s *shard[K, V]) evictFromMain() {
 		e.freq.Store(f - 1)
 		s.main.pushBack(e)
 	}
+}
+
+// sendToDeathRow puts an entry on death row for potential resurrection.
+// If death row is full, the oldest pending entry is truly evicted.
+func (s *shard[K, V]) sendToDeathRow(e *entry[K, V]) {
+	// If death row slot is occupied, truly evict that entry first.
+	if old := s.deathRow[s.deathRowPos]; old != nil {
+		delete(s.entries, old.key)
+		s.addToGhost(old.key, old.peakFreq.Load())
+		old.onDeathRow = false
+		s.freeEntry(old)
+	}
+
+	// Put new entry on death row.
+	e.onDeathRow = true
+	s.deathRow[s.deathRowPos] = e
+	s.deathRowPos = (s.deathRowPos + 1) % len(s.deathRow)
+	s.parent.totalEntries.Add(-1) // count as evicted (will be restored on resurrection)
 }
 
 func (c *s3fifo[K, V]) len() int {
