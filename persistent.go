@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const asyncTimeout = 5 * time.Second
+
 // TieredCache combines an in-memory cache with persistent storage.
 type TieredCache[K comparable, V any] struct {
 	Store      Store[K, V] // direct access to persistence layer
@@ -106,9 +108,8 @@ func (c *TieredCache[K, V]) SetAsync(ctx context.Context, key K, value V, ttl ..
 
 	c.memory.set(key, value, timeToNano(expiry))
 
-	//nolint:contextcheck // detached intentionally
 	go func() {
-		storeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), asyncTimeout)
 		defer cancel()
 		if err := c.Store.Set(storeCtx, key, value, expiry); err != nil {
 			slog.Error("async persistence failed", "key", key, "error", err)

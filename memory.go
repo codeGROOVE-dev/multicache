@@ -164,7 +164,7 @@ func flightShard[K comparable](key K) int {
 	case uint64:
 		return int(k) & (numFlightShards - 1) //nolint:gosec // result is always 0-255
 	case string:
-		return int(wyhashString(k)) & (numFlightShards - 1) //nolint:gosec // result is always 0-255
+		return int(hashString(k)) & (numFlightShards - 1) //nolint:gosec // result is always 0-255
 	default:
 		return 0
 	}

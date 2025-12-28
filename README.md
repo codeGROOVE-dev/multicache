@@ -1,8 +1,8 @@
 # multicache
 
-A sharded in-memory cache for Go with optional persistence.
+multicache is an in-memory #golang cache library. 
 
-Implements S3-FIFO from ["FIFO queues are all you need for cache eviction"](https://dl.acm.org/doi/10.1145/3600006.3613147) (SOSP'23). S3-FIFO matches or exceeds LRU hit rates with simpler operations and better concurrency.
+It's been optimized over hundreds of experiments to be the highest performing cache available - both in terms of hit rates and throughput - and also features an optional multi-tier persistent cache option.
 
 ## Install
 
@@ -28,7 +28,7 @@ cache.Set(ctx, "user:123", user)           // sync write
 cache.SetAsync(ctx, "user:456", user)      // async write
 ```
 
-GetSet deduplicates concurrent loads:
+GetSet deduplicates concurrent loads to prevent thundering herd situations:
 
 ```go
 user, err := cache.GetSet("user:123", func() (User, error) {
@@ -54,9 +54,10 @@ Memory cache backed by durable storage. Reads check memory first; writes go to b
 | Google Cloud Datastore | `pkg/store/datastore` |
 | Auto-detect (Cloud Run) | `pkg/store/cloudrun` |
 
-All backends support S2 or Zstd compression via `pkg/store/compress`.
+For maximum efficiency, all backends support S2 or Zstd compression via `pkg/store/compress`.
 
 ## Performance
+
 
 [gocachemark](https://github.com/tstromberg/gocachemark) compares cache libraries across hit rate, latency, throughput, and memory. Overall scores (Dec 2025):
 
@@ -77,13 +78,13 @@ Where others win:
 - **Memory**: freelru and otter use less memory per entry
 - **Some traces**: CLOCK/LRU marginally better on purely temporal workloads (IBM Docker, Thesios)
 
-Run `make bench` or see gocachemark for full results.
+Run `make competive-bench` for full results.
 
 ## Algorithm
 
-S3-FIFO uses three queues: small (new entries), main (promoted entries), and ghost (recently evicted keys). New items enter small; items accessed twice move to main. The ghost queue tracks evicted keys in a bloom filter to fast-track their return.
+multicache uses [S3-FIFO](https://s3fifo.com/), which features three queues: small (new entries), main (promoted entries), and ghost (recently evicted keys). New items enter small; items accessed twice move to main. The ghost queue tracks evicted keys in a bloom filter to fast-track their return.
 
-This implementation adds:
+multicache has been hyper-tuned for high performance, and deviates from the original paper in a handful of ways:
 
 - **Dynamic sharding** - scales to 16×GOMAXPROCS shards; at 32 threads: 21x Get throughput, 6x Set throughput vs single shard
 - **Tuned small queue** - 24.7% vs paper's 10%, chosen via sweep in 0.1% increments to maximize wins across 9 production traces
@@ -92,11 +93,6 @@ This implementation adds:
 - **Hot item demotion** - items that were once hot (freq≥4) get demoted to small queue instead of evicted; +0.24% zipf
 - **Death row buffer** - 8-entry buffer per shard holds recently evicted items for instant resurrection; +0.04% meta/tencentPhoto, +0.03% wikipedia, +8% set throughput
 - **Ghost frequency ring buffer** - fixed-size 256-entry ring replaces map allocations; -5.1% string latency, -44.5% memory
-- **Cached entry hash** - hash computed once at set, reused on eviction; eliminates re-hashing overhead
-
-Memory overhead is ~66 bytes/item (vs 38 for CLOCK, 119 for map-based ghost tracking)
-
-Details: [s3fifo.com](https://s3fifo.com/)
 
 ## License
 

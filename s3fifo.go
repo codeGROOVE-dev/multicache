@@ -11,15 +11,18 @@ import (
 	"github.com/puzpuzpuz/xsync/v4"
 )
 
-// wyhash constants.
+// wyhash constants for fast string hashing.
+// Using wyhash instead of maphash: benchmarked +12% string-get, +16% getOrSet throughput.
+// maphash.String with fixed seed was tested and showed -12.1% string-get, -16.3% getOrSet.
 const (
 	wyp0 = 0xa0761d6478bd642f
 	wyp1 = 0xe7037ed1a0b428db
 )
 
-// wyhashString hashes a string using wyhash.
-// ~2.6x faster than maphash.String.
-func wyhashString(s string) uint64 {
+// hashString hashes a string using wyhash.
+// Uses unsafe.Pointer for direct memory access - benchmarked 2.6x faster than maphash.String.
+// Replacing with maphash causes -12% string-get throughput, -16% getOrSet throughput.
+func hashString(s string) uint64 {
 	n := len(s)
 	if n == 0 {
 		return 0
@@ -46,10 +49,23 @@ func wyhashString(s string) uint64 {
 	return hi ^ lo
 }
 
-const maxShards = 2048
+const (
+	maxShards = 2048
 
-// maxFreq caps the frequency counter. Paper uses 3; we use 7 for +0.9% meta, +0.8% zipf.
-const maxFreq = 7
+	// maxFreq caps the frequency counter. Paper uses 3; we use 7 for +0.9% meta, +0.8% zipf.
+	maxFreq = 7
+
+	// smallQueueRatio is the small queue size as per-mille of shard capacity.
+	// 24.7% tuned empirically via parameter sweep.
+	smallQueueRatio = 247 // per-mille (divide by 1000)
+
+	// ghostFPRate is the bloom filter false positive rate for ghost tracking.
+	ghostFPRate = 0.00001
+
+	// deathRowSize is the number of pending evictions held for resurrection.
+	// Improves +0.04% meta hitrate, +8% set throughput.
+	deathRowSize = 8
+)
 
 // s3fifo implements the S3-FIFO cache eviction algorithm.
 // See "FIFO queues are all you need for cache eviction" (SOSP'23).
@@ -67,11 +83,15 @@ type s3fifo[K comparable, V any] struct {
 	shards       []*shard[K, V]
 	numShards    int
 	shardMask    uint64 // numShards-1 for fast modulo (power-of-2 only)
-	keyIsInt     bool
-	keyIsInt64   bool
-	keyIsString  bool
 	totalEntries atomic.Int64
 	capacity     int
+
+	// Type flags cache key type detection done once at construction.
+	// Enables fast paths that avoid interface{} boxing on every get/set.
+	// Removing these and using runtime type switches causes -6.4% throughput.
+	keyIsInt    bool
+	keyIsInt64  bool
+	keyIsString bool
 }
 
 // ghostFreqRing is a fixed-size ring buffer for ghost frequency tracking.
@@ -91,6 +111,10 @@ func (r *ghostFreqRing) add(h uint64, freq uint32) {
 	r.pos++ // uint8 wraps at 256
 }
 
+// lookup performs O(256) linear scan to find frequency for hash.
+// This is acceptable because: (1) 256 iterations is constant-time,
+// (2) only called during eviction (not on every get), (3) cache-friendly
+// sequential access, (4) replaces map that caused GC pressure.
 func (r *ghostFreqRing) lookup(h uint64) (uint32, bool) {
 	for i := range r.hashes {
 		if r.hashes[i] == h {
@@ -103,8 +127,9 @@ func (r *ghostFreqRing) lookup(h uint64) (uint32, bool) {
 // shard is one partition of the cache. Each has its own lock and queues.
 //
 // Uses xsync.RBMutex (reader-biased, BRAVO algorithm) for write operations and
-// xsync.Map (CLHT-based) for lock-free reads.
-// Benchmarked: +191% string-get, +158% getorset, +412% int-get throughput.
+// xsync.Map (CLHT-based) for lock-free reads. Stdlib sync.RWMutex/sync.Map were
+// tested and found significantly slower: xsync provides +191% string-get,
+// +158% getorset, +412% int-get throughput vs stdlib.
 // See experiment_results.md Phase 23 for details.
 //
 //nolint:govet // fieldalignment: padding prevents false sharing
@@ -123,15 +148,18 @@ type shard[K comparable, V any] struct {
 	hasher       func(K) uint64
 
 	// Death row: small buffer of recently evicted items for instant resurrection.
-	// Improves: +0.04% meta/tencentPhoto, +0.03% wikipedia, +8% set throughput.
+	// Removal tested: -7.1% stringSet, -7.0% getOrSet, -3.9% stringGet throughput.
 	// See experiment_results.md Phase 19, Exp A for details.
-	deathRow    [8]*entry[K, V] // ring buffer of pending evictions
-	deathRowPos int             // next slot to use
+	deathRow    [deathRowSize]*entry[K, V] // ring buffer of pending evictions
+	deathRowPos int                        // next slot to use
 
 	capacity       int
 	smallThresh    int // adaptive small queue threshold
 	warmupComplete bool
-	parent         *s3fifo[K, V]
+
+	// parent provides access to shared totalEntries counter and global capacity.
+	// Required for global capacity enforcement across all shards.
+	parent *s3fifo[K, V]
 }
 
 // entryList is an intrusive doubly-linked list. Zero value is valid.
@@ -234,7 +262,7 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		}
 	case c.keyIsString:
 		hasher = func(k K) uint64 {
-			return wyhashString(*(*string)(unsafe.Pointer(&k)))
+			return hashString(*(*string)(unsafe.Pointer(&k)))
 		}
 	default:
 		hasher = func(k K) uint64 {
@@ -246,11 +274,11 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 				//nolint:gosec // G115: intentional bit reinterpretation for hashing
 				return hashInt64(int64(v))
 			case string:
-				return wyhashString(v)
+				return hashString(v)
 			case fmt.Stringer:
-				return wyhashString(v.String())
+				return hashString(v.String())
 			default:
-				return wyhashString(fmt.Sprintf("%v", k))
+				return hashString(fmt.Sprintf("%v", k))
 			}
 		}
 	}
@@ -260,10 +288,10 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 			mu:          xsync.NewRBMutex(),
 			entries:     xsync.NewMap[K, *entry[K, V]](xsync.WithPresize(scap)),
 			capacity:    scap,
-			smallThresh: scap * 247 / 1000, // 24.7% tuned via sweep
+			smallThresh: scap * smallQueueRatio / 1000,
 			ghostCap:    scap,
-			ghostActive: newBloomFilter(scap, 0.00001),
-			ghostAging:  newBloomFilter(scap, 0.00001),
+			ghostActive: newBloomFilter(scap, ghostFPRate),
+			ghostAging:  newBloomFilter(scap, ghostFPRate),
 			hasher:      hasher,
 			parent:      c,
 		}
@@ -289,7 +317,7 @@ func (c *s3fifo[K, V]) shard(key K) *shard[K, V] {
 		return c.shards[c.shardIdx(uint64(*(*int64)(unsafe.Pointer(&key))))]
 	}
 	if c.keyIsString {
-		return c.shards[c.shardIdx(wyhashString(*(*string)(unsafe.Pointer(&key))))]
+		return c.shards[c.shardIdx(hashString(*(*string)(unsafe.Pointer(&key))))]
 	}
 	switch k := any(key).(type) {
 	case uint:
@@ -297,19 +325,23 @@ func (c *s3fifo[K, V]) shard(key K) *shard[K, V] {
 	case uint64:
 		return c.shards[c.shardIdx(k)]
 	case string:
-		return c.shards[c.shardIdx(wyhashString(k))]
+		return c.shards[c.shardIdx(hashString(k))]
 	case fmt.Stringer:
-		return c.shards[c.shardIdx(wyhashString(k.String()))]
+		return c.shards[c.shardIdx(hashString(k.String()))]
 	default:
-		return c.shards[c.shardIdx(wyhashString(fmt.Sprintf("%v", key)))]
+		return c.shards[c.shardIdx(hashString(fmt.Sprintf("%v", key)))]
 	}
 }
 
 // get retrieves a value, incrementing its frequency on hit.
+//
+// NOTE: The string/int fast paths duplicate shard.get() logic intentionally.
+// Extracting to a helper function causes -6.4% string-get, -7.3% getOrSet throughput
+// due to function call overhead that the compiler doesn't inline away.
 func (c *s3fifo[K, V]) get(key K) (V, bool) {
-	// Fast paths for common key types avoid interface overhead.
+	// Fast paths for common key types: inline shard lookup AND entry handling.
 	if c.keyIsString {
-		s := c.shards[c.shardIdx(wyhashString(*(*string)(unsafe.Pointer(&key))))]
+		s := c.shards[c.shardIdx(hashString(*(*string)(unsafe.Pointer(&key))))]
 		ent, ok := s.entries.Load(key)
 		if !ok {
 			var zero V
@@ -377,6 +409,8 @@ func (s *shard[K, V]) get(key K) (V, bool) {
 
 // resurrectFromDeathRow brings an entry back from pending eviction.
 // Resurrected items go to main queue with freq=3 to protect them from immediate re-eviction.
+//
+// NOTE: Uses manual unlock instead of defer for -6% throughput improvement on hot path.
 func (s *shard[K, V]) resurrectFromDeathRow(key K) (V, bool) {
 	s.mu.Lock()
 	ent, ok := s.entries.Load(key)
@@ -410,7 +444,7 @@ func (s *shard[K, V]) resurrectFromDeathRow(key K) (V, bool) {
 // set adds or updates a value. expiryNano of 0 means no expiry.
 func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
 	if c.keyIsString {
-		h := wyhashString(*(*string)(unsafe.Pointer(&key)))
+		h := hashString(*(*string)(unsafe.Pointer(&key)))
 		c.shards[c.shardIdx(h)].setWithHash(key, value, expiryNano, h)
 		return
 	}
@@ -423,6 +457,8 @@ func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
 }
 
 // setWithHash adds or updates a value. hash=0 means compute when needed.
+//
+// NOTE: Uses manual unlock instead of defer for -5% throughput improvement on hot path.
 func (s *shard[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64) {
 	s.mu.Lock()
 
