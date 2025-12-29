@@ -1,8 +1,8 @@
 # multicache
 
-multicache is an in-memory #golang cache library. 
+multicache is an absurdly fast multi-threaded multi-tiered in-memory cache library for Go -- it offers higher performance than any other option ever created for the language.
 
-It's been optimized over hundreds of experiments to be the highest performing cache available - both in terms of hit rates and throughput - and also features an optional multi-tier persistent cache option.
+It offers optional persistence with compression, and has been specifically optimized for Cloud Compute environments where the process is periodically restarted, such as Kubernetes or Google Cloud Run. 
 
 ## Install
 
@@ -58,22 +58,22 @@ For maximum efficiency, all backends support S2 or Zstd compression via `pkg/sto
 
 ## Performance
 
-multicache has been exhaustively tested for performance using [gocachemark](https://github.com/tstromberg/gocachemark). As of Dec 2025, it's the highest performing cache implementation for Go.
+multicache has been exhaustively tested for performance using [gocachemark](https://github.com/tstromberg/gocachemark).
 
 Where multicache wins:
 
-- **Throughput**: 1 billion ints/second at 16 threads or higher. (2-3X faster than otter)
-- **Hit rate**: Highest average across datasets (1.6% higher than sieve, 4.4% higher than otter)
-- **Latency**: 8-11ns Gets, zero allocations (3-4X lower latency than otter)
+- **Throughput**: 954M int gets/sec at 16 threads (2.2X faster than otter). 140M string sets/sec (9X faster than otter).
+- **Hit rate**: Wins 7 of 9 workloads. Highest average across all datasets (+2.9% vs otter, +0.9% vs sieve).
+- **Latency**: 8ns int gets, 10ns string gets, zero allocations (4X lower latency than otter)
 
 Where others win:
 
-- **Memory**: freelru and otter use less memory per entry
-- **Temporal workload hit rates**: Some caches work marginally better in certain workloads by a very thin margin: clock (+0.006% on thesios-block), sieve (+0.005% on thesios-file)
+- **Memory**: freelru and otter use less memory per entry (73 bytes/item overhead vs 15 for otter)
+- **Specific workloads**: clock +0.07% on ibm-docker, theine +0.34% on zipf
 
 Much of the credit for high throughput goes to [puzpuzpuz/xsync](https://github.com/puzpuzpuz/xsync). While highly sharded maps and flightGroups performed well, you can't beat xsync's lock-free data structures.
 
-Run `make competive-bench` for full results.
+Run `make benchmark` for full results, or see [benchmarks/gocachemark_results.md](benchmarks/gocachemark_results.md).
 
 ## Algorithm
 

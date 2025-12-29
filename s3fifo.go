@@ -92,11 +92,13 @@ type s3fifo[K comparable, V any] struct {
 	hasher       func(K) uint64
 
 	// Death row: buffer of recently evicted items for instant resurrection.
-	// Size scales with capacity (was per-shard × 8, now capacity/128).
-	// Removal tested: -7.1% stringSet, -7.0% getOrSet, -3.9% stringGet throughput.
-	// See experiment_results.md Phase 19, Exp A for details.
+	// Items on death row remain in memory, so larger death row effectively
+	// increases cache size. Increase sparingly.
 	deathRow    []*entry[K, V] // ring buffer of pending evictions
 	deathRowPos int            // next slot to use
+
+	// Entry recycling to reduce allocations during eviction.
+	freeEntry *entry[K, V]
 
 	capacity       int
 	smallThresh    int // adaptive small queue threshold
@@ -186,11 +188,11 @@ func timeToNano(t time.Time) int64 {
 // entry is a cached key-value pair with eviction metadata.
 type entry[K comparable, V any] struct {
 	key        K
-	value      V
+	value      atomic.Value // stores V atomically for safe concurrent access
 	prev       *entry[K, V]
 	next       *entry[K, V]
 	hash       uint64        // cached key hash, avoids re-hashing on eviction (Phase 20, Exp B)
-	expiryNano int64         // 0 means no expiry
+	expiryNano atomic.Int64  // 0 means no expiry
 	freq       atomic.Uint32 // access count, capped at maxFreq
 	peakFreq   atomic.Uint32 // max freq seen, for ghost restore
 	inSmall    bool
@@ -203,8 +205,9 @@ func newS3FIFO[K comparable, V any](cfg *config) *s3fifo[K, V] {
 		size = 16384
 	}
 
-	// Scale death row with capacity (was numShards × 8 with sharding).
-	deathRowSize := max(minDeathRowSize, size/128)
+	// Scale death row with capacity. Items on death row remain in memory, so larger
+	// death row effectively increases cache size. Increase sparingly.
+	deathRowSize := max(minDeathRowSize, size/1024)
 
 	c := &s3fifo[K, V]{
 		mu:          xsync.NewRBMutex(),
@@ -273,7 +276,7 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 	if ent.onDeathRow {
 		return c.resurrectFromDeathRow(key)
 	}
-	if ent.expiryNano != 0 && time.Now().UnixNano() > ent.expiryNano {
+	if exp := ent.expiryNano.Load(); exp != 0 && time.Now().UnixNano() > exp {
 		var zero V
 		return zero, false
 	}
@@ -282,7 +285,8 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 			ent.peakFreq.Store(newFreq)
 		}
 	}
-	return ent.value, true
+	val, ok := ent.value.Load().(V)
+	return val, ok
 }
 
 // resurrectFromDeathRow brings an entry back from pending eviction.
@@ -314,9 +318,9 @@ func (c *s3fifo[K, V]) resurrectFromDeathRow(key K) (V, bool) {
 	c.main.pushBack(ent)
 	c.totalEntries.Add(1)
 
-	val := ent.value
+	val, ok := ent.value.Load().(V)
 	c.mu.Unlock()
-	return val, true
+	return val, ok
 }
 
 // set adds or updates a value. expiryNano of 0 means no expiry.
@@ -332,12 +336,26 @@ func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
 //
 // NOTE: Uses manual unlock instead of defer for -5% throughput improvement on hot path.
 func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64) {
+	// Fast path: lock-free update for existing entries.
+	// All entry fields are atomic, so no lock needed for updates.
+	if ent, exists := c.entries.Load(key); exists {
+		ent.value.Store(value)
+		ent.expiryNano.Store(expiryNano)
+		if ent.freq.Load() < maxFreq {
+			if newFreq := ent.freq.Add(1); newFreq > ent.peakFreq.Load() {
+				ent.peakFreq.Store(newFreq)
+			}
+		}
+		return
+	}
+
+	// Slow path: need lock for new entry insertion.
 	c.mu.Lock()
 
-	// Update existing entry if present.
+	// Double-check after acquiring lock.
 	if ent, exists := c.entries.Load(key); exists {
-		ent.value = value
-		ent.expiryNano = expiryNano
+		ent.value.Store(value)
+		ent.expiryNano.Store(expiryNano)
 		if ent.freq.Load() < maxFreq {
 			if newFreq := ent.freq.Add(1); newFreq > ent.peakFreq.Load() {
 				ent.peakFreq.Store(newFreq)
@@ -347,8 +365,21 @@ func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64
 		return
 	}
 
-	// Create new entry.
-	ent := &entry[K, V]{key: key, value: value, expiryNano: expiryNano}
+	// Allocate-first: reuse recycled entry or allocate new one.
+	ent := c.freeEntry
+	if ent != nil {
+		c.freeEntry = nil
+		ent.key = key
+		ent.value.Store(value)
+		ent.freq.Store(0)
+		ent.peakFreq.Store(0)
+		ent.inSmall = false
+		ent.onDeathRow = false
+	} else {
+		ent = &entry[K, V]{key: key}
+		ent.value.Store(value)
+	}
+	ent.expiryNano.Store(expiryNano)
 
 	// Cache hash for fast eviction (avoids re-hashing string keys).
 	h := hash
@@ -503,6 +534,9 @@ func (c *s3fifo[K, V]) sendToDeathRow(e *entry[K, V]) {
 		c.entries.Delete(old.key)
 		c.addToGhost(old.hash, old.peakFreq.Load())
 		old.onDeathRow = false
+		// Recycle entry for reuse (reduces allocations).
+		old.prev, old.next = nil, nil
+		c.freeEntry = old
 	}
 
 	e.onDeathRow = true
@@ -512,7 +546,8 @@ func (c *s3fifo[K, V]) sendToDeathRow(e *entry[K, V]) {
 }
 
 func (c *s3fifo[K, V]) len() int {
-	return c.entries.Size()
+	// Return live entries only (excludes items pending eviction on death row).
+	return int(c.totalEntries.Load())
 }
 
 // getEntry returns an entry for testing purposes (not for production use).
