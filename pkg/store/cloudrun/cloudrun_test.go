@@ -3,7 +3,6 @@ package cloudrun
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -30,10 +29,12 @@ func TestNew_LocalFallback(t *testing.T) {
 		}
 	}()
 
-	// Verify it's using local files by checking the Location format
-	loc := p.Location("test-key")
-	if !strings.Contains(loc, "/") && !strings.Contains(loc, "\\") {
-		t.Errorf("expected file path in location, got: %s", loc)
+	// Verify basic operations work
+	if err := p.Set(ctx, "test-key", "test-value", time.Time{}); err != nil {
+		t.Fatalf("Set() failed: %v", err)
+	}
+	if _, _, found, err := p.Get(ctx, "test-key"); err != nil || !found {
+		t.Errorf("Get() failed or not found: %v", err)
 	}
 }
 
@@ -62,10 +63,12 @@ func TestNew_CloudRunWithoutDatastore(t *testing.T) {
 		}
 	}()
 
-	// Verify it fell back to local files
-	loc := p.Location("test-key")
-	if !strings.Contains(loc, "/") && !strings.Contains(loc, "\\") {
-		t.Errorf("expected file path in location after fallback, got: %s", loc)
+	// Verify basic operations work after fallback
+	if err := p.Set(ctx, "test-key", "test-value", time.Time{}); err != nil {
+		t.Fatalf("Set() failed: %v", err)
+	}
+	if _, _, found, err := p.Get(ctx, "test-key"); err != nil || !found {
+		t.Errorf("Get() failed or not found: %v", err)
 	}
 }
 
@@ -125,10 +128,12 @@ func TestNew_DetectsCloudRun(t *testing.T) {
 		}
 	}()
 
-	// Should use local files (check location format)
-	loc := p.Location("testkey")
-	if !strings.Contains(loc, "/") && !strings.Contains(loc, "\\") {
-		t.Errorf("expected file path location, got: %s", loc)
+	// Verify basic operations work
+	if err := p.Set(ctx, "testkey", "testvalue", time.Time{}); err != nil {
+		t.Fatalf("Set() failed: %v", err)
+	}
+	if _, _, found, err := p.Get(ctx, "testkey"); err != nil || !found {
+		t.Errorf("Get() failed or not found: %v", err)
 	}
 }
 

@@ -118,10 +118,6 @@ type s3fifo[K comparable, V any] struct {
 	warmupComplete bool
 	totalEntries   atomic.Int64
 
-	// Death row admission tracking: use high-resolution peakFreq for smarter filtering.
-	globalMaxPeak atomic.Uint32 // highest peakFreq observed (up to maxPeakFreq)
-	peakMaxCount  atomic.Int32  // items that hit globalMaxPeak (detects outliers)
-
 	// Type flags cache key type detection done once at construction.
 	// Enables fast paths that avoid interface{} boxing on every get/set.
 	// Removing these and using runtime type switches causes -6.4% throughput.
@@ -133,15 +129,14 @@ type s3fifo[K comparable, V any] struct {
 // ghostFreqRing is a fixed-size ring buffer for ghost frequency tracking.
 // Replaces map[uint64]uint32 to eliminate allocation during ghost rotation.
 // 256 entries with uint8 wrapping = zero-cost modulo.
-// Improves: -5.1% string latency, -44.5% memory (119 → 66 bytes/item).
-// See experiment_results.md Phase 20, Exp A for details.
+// Uses uint32 hashes (sufficient for ghost queue collision avoidance).
 type ghostFreqRing struct {
-	hashes [256]uint64
+	hashes [256]uint32
 	freqs  [256]uint32
 	pos    uint8
 }
 
-func (r *ghostFreqRing) add(h uint64, freq uint32) {
+func (r *ghostFreqRing) add(h uint32, freq uint32) {
 	r.hashes[r.pos] = h
 	r.freqs[r.pos] = freq
 	r.pos++ // uint8 wraps at 256
@@ -151,7 +146,7 @@ func (r *ghostFreqRing) add(h uint64, freq uint32) {
 // This is acceptable because: (1) 256 iterations is constant-time,
 // (2) only called during eviction (not on every get), (3) cache-friendly
 // sequential access, (4) replaces map that caused GC pressure.
-func (r *ghostFreqRing) lookup(h uint64) (uint32, bool) {
+func (r *ghostFreqRing) lookup(h uint32) (uint32, bool) {
 	for i := range r.hashes {
 		if r.hashes[i] == h {
 			return r.freqs[i], true
@@ -208,8 +203,8 @@ type entry[K comparable, V any] struct {
 	value      atomic.Value // stores V atomically for safe concurrent access
 	prev       *entry[K, V]
 	next       *entry[K, V]
-	hash       uint64        // cached key hash, avoids re-hashing on eviction (Phase 20, Exp B)
 	expiryNano atomic.Int64  // 0 means no expiry
+	hash       uint32        // cached key hash (32-bit sufficient for bloom filter)
 	freq       atomic.Uint32 // access count, capped at maxFreq
 	peakFreq   atomic.Uint32 // max freq seen, for ghost restore
 	inSmall    bool
@@ -301,20 +296,7 @@ func (c *s3fifo[K, V]) get(key K) (V, bool) {
 	}
 	// Track peakFreq separately with higher cap for death row decisions.
 	if peak := ent.peakFreq.Load(); peak < maxPeakFreq {
-		newPeak := peak + 1
-		if ent.peakFreq.CompareAndSwap(peak, newPeak) {
-			// Update global max if this is a new high.
-			for gm := c.globalMaxPeak.Load(); newPeak > gm; gm = c.globalMaxPeak.Load() {
-				if c.globalMaxPeak.CompareAndSwap(gm, newPeak) {
-					c.peakMaxCount.Store(1)
-					break
-				}
-			}
-			// Increment count if we match the current max.
-			if newPeak == c.globalMaxPeak.Load() {
-				c.peakMaxCount.Add(1)
-			}
-		}
+		ent.peakFreq.Add(1)
 	}
 	val, ok := ent.value.Load().(V)
 	return val, ok
@@ -350,19 +332,8 @@ func (c *s3fifo[K, V]) resurrectFromDeathRow(key K) (V, bool) {
 	c.totalEntries.Add(1)
 
 	// Evict to maintain capacity after resurrection.
-	// Note: main.len > 0 is guaranteed here since we just pushed to main.
 	if c.totalEntries.Load() > int64(c.capacity) {
-		for {
-			if c.main.len > 0 && c.small.len <= c.smallThresh {
-				if c.evictFromMain() {
-					break
-				}
-			} else if c.small.len > 0 {
-				if c.evictFromSmall() {
-					break
-				}
-			}
-		}
+		c.evictOne()
 	}
 
 	val, ok := ent.value.Load().(V)
@@ -380,25 +351,14 @@ func (c *s3fifo[K, V]) set(key K, value V, expiryNano int64) {
 }
 
 // updateEntry updates an existing entry's value and frequency counters.
-func (c *s3fifo[K, V]) updateEntry(ent *entry[K, V], value V, expiryNano int64) {
+func (*s3fifo[K, V]) updateEntry(ent *entry[K, V], value V, expiryNano int64) {
 	ent.value.Store(value)
 	ent.expiryNano.Store(expiryNano)
 	if ent.freq.Load() < maxFreq {
 		ent.freq.Add(1)
 	}
 	if peak := ent.peakFreq.Load(); peak < maxPeakFreq {
-		newPeak := peak + 1
-		if ent.peakFreq.CompareAndSwap(peak, newPeak) {
-			for gm := c.globalMaxPeak.Load(); newPeak > gm; gm = c.globalMaxPeak.Load() {
-				if c.globalMaxPeak.CompareAndSwap(gm, newPeak) {
-					c.peakMaxCount.Store(1)
-					break
-				}
-			}
-			if newPeak == c.globalMaxPeak.Load() {
-				c.peakMaxCount.Add(1)
-			}
-		}
+		ent.peakFreq.Add(1)
 	}
 }
 
@@ -443,7 +403,7 @@ func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64
 	if h == 0 {
 		h = c.hasher(key)
 	}
-	ent.hash = h
+	ent.hash = uint32(h)
 
 	full := c.totalEntries.Load() >= int64(c.capacity)
 
@@ -465,27 +425,13 @@ func (c *s3fifo[K, V]) setWithHash(key K, value V, expiryNano int64, hash uint64
 
 		// Restore frequency from ghost for returning keys.
 		if !ent.inSmall {
-			if peak, ok := c.ghostFreqRng.lookup(h); ok {
+			if peak, ok := c.ghostFreqRng.lookup(uint32(h)); ok {
 				ent.freq.Store(peak)
 				ent.peakFreq.Store(peak)
 			}
 		}
 
-		// Eviction loop: keep evicting until we actually remove an entry.
-		// This prevents unbounded capacity growth from promotions/demotions.
-		// Note: If full==true, at least one queue has entries (totalEntries counts
-		// only entries in small/main, not death row).
-		for {
-			if c.main.len > 0 && c.small.len <= c.smallThresh {
-				if c.evictFromMain() {
-					break
-				}
-			} else if c.small.len > 0 {
-				if c.evictFromSmall() {
-					break
-				}
-			}
-		}
+		c.evictOne()
 	} else {
 		ent.inSmall = true
 	}
@@ -524,14 +470,31 @@ func (c *s3fifo[K, V]) del(key K) {
 // Uses cached hash from entry to avoid re-hashing.
 // Note: bloom Add is idempotent, so we skip Contains check for speed.
 // Entry count may be slightly inflated but rotation timing is approximate anyway.
-func (c *s3fifo[K, V]) addToGhost(h uint64, peakFreq uint32) {
-	c.ghostActive.Add(h)
+func (c *s3fifo[K, V]) addToGhost(h uint32, peakFreq uint32) {
+	h64 := uint64(h)
+	c.ghostActive.Add(h64)
 	if peakFreq >= 1 {
 		c.ghostFreqRng.add(h, peakFreq)
 	}
 	if c.ghostActive.entries >= c.ghostCap {
 		c.ghostAging.Reset()
 		c.ghostActive, c.ghostAging = c.ghostAging, c.ghostActive
+	}
+}
+
+// evictOne evicts a single entry, preferring main when small is at or below threshold.
+// Called after adding an entry when the cache is at capacity.
+func (c *s3fifo[K, V]) evictOne() {
+	for {
+		if c.main.len > 0 && c.small.len <= c.smallThresh {
+			if c.evictFromMain() {
+				return
+			}
+		} else if c.small.len > 0 {
+			if c.evictFromSmall() {
+				return
+			}
+		}
 	}
 }
 

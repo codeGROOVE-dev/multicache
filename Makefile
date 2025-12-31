@@ -1,4 +1,4 @@
-.PHONY: test lint bench benchmark competitive-benchmark clean tag release update
+.PHONY: test lint bench benchmark competitive-benchmark coverage clean tag release update
 
 # Tag all modules in the repository with a version
 # Usage: make tag VERSION=v1.2.3
@@ -70,6 +70,9 @@ benchmark:
 
 competitive-benchmark:
 	go run ./benchmarks/runner.go -competitive
+
+coverage:
+	go test -coverprofile=coverage.out -covermode=atomic ./...
 
 clean:
 	go clean -testcache

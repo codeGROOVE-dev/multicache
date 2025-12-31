@@ -9,11 +9,10 @@ import (
 
 func TestCache_ReadPerformance(t *testing.T) {
 	cache := New[int, int]()
-	defer cache.Close()
 
 	// Populate cache
 	for i := range 10000 {
-		cache.Set(i, i, 0)
+		cache.Set(i, i)
 	}
 
 	// Warm up

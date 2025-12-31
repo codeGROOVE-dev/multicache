@@ -8,6 +8,18 @@ import (
 	"github.com/puzpuzpuz/xsync/v4"
 )
 
+// calculateExpiry returns the expiry time for a given TTL, falling back to defaultTTL.
+// Returns zero Time (no expiry) if both TTL and defaultTTL are zero or negative.
+func calculateExpiry(ttl, defaultTTL time.Duration) time.Time {
+	if ttl <= 0 {
+		ttl = defaultTTL
+	}
+	if ttl <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(ttl)
+}
+
 // Cache is an in-memory cache. All operations are synchronous and infallible.
 type Cache[K comparable, V any] struct {
 	flights    *xsync.Map[K, *flightCall[V]]
@@ -45,17 +57,24 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	return c.memory.get(key)
 }
 
-// Set stores a value. Uses default TTL if none provided.
-func (c *Cache[K, V]) Set(key K, value V, ttl ...time.Duration) {
-	if c.noExpiry && len(ttl) == 0 {
+// Set stores a value using the default TTL specified at cache creation.
+// If no default TTL was set, the entry never expires.
+func (c *Cache[K, V]) Set(key K, value V) {
+	if c.noExpiry {
 		c.memory.set(key, value, 0)
 		return
 	}
-	var t time.Duration
-	if len(ttl) > 0 {
-		t = ttl[0]
+	c.memory.set(key, value, timeToNano(c.expiry(0)))
+}
+
+// SetTTL stores a value with an explicit TTL.
+// A zero or negative TTL means the entry never expires.
+func (c *Cache[K, V]) SetTTL(key K, value V, ttl time.Duration) {
+	if ttl <= 0 {
+		c.memory.set(key, value, 0)
+		return
 	}
-	c.memory.set(key, value, timeToNano(c.expiry(t)))
+	c.memory.set(key, value, time.Now().Add(ttl).UnixNano())
 }
 
 // Delete removes a key from the cache.
@@ -63,22 +82,19 @@ func (c *Cache[K, V]) Delete(key K) {
 	c.memory.del(key)
 }
 
-// SetIfAbsent stores value only if key is missing. No deduplication.
-func (c *Cache[K, V]) SetIfAbsent(key K, value V, ttl ...time.Duration) (V, bool) {
-	if val, ok := c.memory.get(key); ok {
-		return val, true
-	}
-	var t time.Duration
-	if len(ttl) > 0 {
-		t = ttl[0]
-	}
-	c.memory.set(key, value, timeToNano(c.expiry(t)))
-	return value, false
-}
-
 // GetSet returns cached value or calls loader to compute it.
 // Concurrent calls for the same key share one loader invocation.
-func (c *Cache[K, V]) GetSet(key K, loader func() (V, error), ttl ...time.Duration) (V, error) {
+// Computed values are stored with the default TTL.
+func (c *Cache[K, V]) GetSet(key K, loader func() (V, error)) (V, error) {
+	return c.getSet(key, loader, 0)
+}
+
+// GetSetTTL is like GetSet but stores computed values with an explicit TTL.
+func (c *Cache[K, V]) GetSetTTL(key K, loader func() (V, error), ttl time.Duration) (V, error) {
+	return c.getSet(key, loader, ttl)
+}
+
+func (c *Cache[K, V]) getSet(key K, loader func() (V, error), ttl time.Duration) (V, error) {
 	if val, ok := c.memory.get(key); ok {
 		return val, nil
 	}
@@ -90,14 +106,12 @@ func (c *Cache[K, V]) GetSet(key K, loader func() (V, error), ttl ...time.Durati
 	})
 
 	if loaded {
-		// Another goroutine is computing; wait for result.
 		call.wg.Wait()
 		return call.val, call.err
 	}
 
-	// We're the first; check cache again then compute.
 	if val, ok := c.memory.get(key); ok {
-		call.val = val // Set for any waiters before wg.Done()
+		call.val = val
 		c.flights.Delete(key)
 		call.wg.Done()
 		return val, nil
@@ -105,11 +119,11 @@ func (c *Cache[K, V]) GetSet(key K, loader func() (V, error), ttl ...time.Durati
 
 	val, err := loader()
 	if err == nil {
-		var t time.Duration
-		if len(ttl) > 0 {
-			t = ttl[0]
+		if ttl <= 0 {
+			c.Set(key, val)
+		} else {
+			c.SetTTL(key, val, ttl)
 		}
-		c.memory.set(key, val, timeToNano(c.expiry(t)))
 	}
 
 	call.val, call.err = val, err
@@ -129,17 +143,8 @@ func (c *Cache[K, V]) Flush() int {
 	return c.memory.flush()
 }
 
-// Close is a no-op for Cache (provided for API symmetry with TieredCache).
-func (*Cache[K, V]) Close() {}
-
 func (c *Cache[K, V]) expiry(ttl time.Duration) time.Time {
-	if ttl <= 0 {
-		ttl = c.defaultTTL
-	}
-	if ttl <= 0 {
-		return time.Time{}
-	}
-	return time.Now().Add(ttl)
+	return calculateExpiry(ttl, c.defaultTTL)
 }
 
 type config struct {

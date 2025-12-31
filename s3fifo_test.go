@@ -376,7 +376,7 @@ func TestS3FIFOBehavior(t *testing.T) {
 
 	// Insert hot items that will be accessed multiple times
 	for i := range 5000 {
-		cache.Set(i, i, 0)
+		cache.Set(i, i)
 	}
 
 	// Access hot items once (marks them for promotion)
@@ -386,7 +386,7 @@ func TestS3FIFOBehavior(t *testing.T) {
 
 	// Insert one-hit wonders (should be evicted before hot items)
 	for i := 20000; i < 26000; i++ {
-		cache.Set(i, i, 0)
+		cache.Set(i, i)
 	}
 
 	// Check if hot items survived
@@ -409,7 +409,7 @@ func TestS3FIFOEvictionOrder(t *testing.T) {
 
 	// Fill cache with items
 	for i := range 40 {
-		cache.Set(i, i, 0)
+		cache.Set(i, i)
 	}
 
 	// Access first 20 items (marks them for promotion)
@@ -419,7 +419,7 @@ func TestS3FIFOEvictionOrder(t *testing.T) {
 
 	// Insert new items (should evict unaccessed items first)
 	for i := 100; i < 120; i++ {
-		cache.Set(i, i, 0)
+		cache.Set(i, i)
 	}
 
 	// Verify accessed items survived
@@ -440,7 +440,7 @@ func TestS3FIFODetailed(t *testing.T) {
 
 	// Insert items 1-cacheSize into cache
 	for i := 1; i <= cacheSize; i++ {
-		cache.Set(i, i*100, 0)
+		cache.Set(i, i*100)
 	}
 
 	// Access items 1-1000 multiple times (marks them as hot)
@@ -453,7 +453,7 @@ func TestS3FIFODetailed(t *testing.T) {
 
 	// Insert one-hit wonders to trigger eviction
 	for i := cacheSize + 1; i <= cacheSize+20000; i++ {
-		cache.Set(i, i*100, 0)
+		cache.Set(i, i*100)
 	}
 
 	// Check which hot items survived
@@ -1759,7 +1759,7 @@ func TestS3FIFO_GhostFreqRing(t *testing.T) {
 
 	// Fill ring to wrap around
 	for i := range 300 {
-		ring.add(uint64(1000+i), uint32(i))
+		ring.add(uint32(1000+i), uint32(i))
 	}
 
 	// Old entries should be overwritten
@@ -2195,11 +2195,12 @@ func TestS3FIFO_DeleteItemInMain(t *testing.T) {
 	var inSmallCount, inMainCount, onDeathRowCount int
 	for i := range 50 {
 		if ent, ok := cache.getEntry(i); ok {
-			if ent.onDeathRow {
+			switch {
+			case ent.onDeathRow:
 				onDeathRowCount++
-			} else if ent.inSmall {
+			case ent.inSmall:
 				inSmallCount++
-			} else {
+			default:
 				inMainCount++
 			}
 		}
@@ -2350,7 +2351,7 @@ func TestS3FIFO_ResurrectFromDeathRow_WithEviction(t *testing.T) {
 	}
 
 	// Find an item on death row
-	var foundOnDeathRow int = -1
+	foundOnDeathRow := -1
 	for i := range 20 {
 		if ent, ok := cache.getEntry(i); ok && ent.onDeathRow {
 			foundOnDeathRow = i
@@ -2473,12 +2474,10 @@ func TestS3FIFO_SetWithHash_DoubleCheck(t *testing.T) {
 
 	// Multiple goroutines try to set the same key
 	for range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			cache.set(key, 100, 0)
 			setCount.Add(1)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -2530,4 +2529,121 @@ func TestS3FIFO_SetNotFull(t *testing.T) {
 			t.Error("new entry should be in small queue when cache not full")
 		}
 	}
+}
+
+// TestS3FIFO_EvictionEdgeCases tests edge cases in eviction functions.
+func TestS3FIFO_EvictionEdgeCases(t *testing.T) {
+	// Test evictFromSmall returning false when queue is empty
+	cache := newS3FIFO[int, int](&config{size: 10})
+
+	// Manually call evictFromSmall on empty cache
+	if cache.evictFromSmall() {
+		t.Error("evictFromSmall should return false on empty queue")
+	}
+
+	// Test evictFromMain returning false when queue is empty
+	if cache.evictFromMain() {
+		t.Error("evictFromMain should return false on empty queue")
+	}
+
+	// Test demotion path: item with peakFreq >= 1 gets demoted from main to small
+	// Fill cache to trigger eviction logic
+	for i := range 10 {
+		cache.set(i, i, 0)
+	}
+
+	// Access some items to increase their freq
+	for i := range 5 {
+		cache.get(i)
+		cache.get(i) // Increase freq to promote to main
+	}
+
+	// Force entries to main queue by adding more
+	for i := 10; i < 20; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// Verify we hit promotion and demotion paths
+	mainCount := cache.main.len
+	smallCount := cache.small.len
+	t.Logf("main.len=%d, small.len=%d", mainCount, smallCount)
+}
+
+// TestS3FIFO_EvictFromMain_DirectToDeathRow tests eviction when peakFreq < 1.
+func TestS3FIFO_EvictFromMain_DirectToDeathRow(t *testing.T) {
+	cache := newS3FIFO[int, int](&config{size: 10})
+
+	// Fill cache with items that are never accessed (peakFreq stays 0)
+	for i := range 10 {
+		cache.set(i, i, 0)
+	}
+
+	// Force items to main queue by accessing them twice (promotes to main)
+	for i := range 10 {
+		cache.get(i)
+		cache.get(i)
+	}
+
+	// Now add more items to trigger eviction from main
+	// Items in main with freq=0 and peakFreq=0 should go directly to death row
+	for i := 10; i < 25; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// Verify some items were evicted
+	evicted := 0
+	for i := range 10 {
+		if _, ok := cache.get(i); !ok {
+			evicted++
+		}
+	}
+	t.Logf("Evicted %d of original 10 items", evicted)
+}
+
+// TestS3FIFO_EvictFromSmall_TriggersMainEviction tests the nested eviction path.
+func TestS3FIFO_EvictFromSmall_TriggersMainEviction(t *testing.T) {
+	// Use a very small cache to make main queue overflow quickly
+	cache := newS3FIFO[int, int](&config{size: 20})
+
+	// Fill small queue first
+	for i := range 20 {
+		cache.set(i, i, 0)
+	}
+
+	// Access all items twice to promote them to main (freq >= 2)
+	for i := range 20 {
+		cache.get(i)
+		cache.get(i)
+	}
+
+	// Add more items - this should trigger:
+	// 1. New items go to small (or main via ghost)
+	// 2. Small items with freq>=2 get promoted to main
+	// 3. Main overflows, triggering evictFromMain from within evictFromSmall
+	for i := 20; i < 50; i++ {
+		cache.set(i, i, 0)
+	}
+
+	// Log queue states
+	t.Logf("main.len=%d, small.len=%d, capacity=%d", cache.main.len, cache.small.len, cache.capacity)
+}
+
+// TestS3FIFO_EvictOne_SmallQueuePath tests evictOne when main is empty.
+func TestS3FIFO_EvictOne_SmallQueuePath(t *testing.T) {
+	cache := newS3FIFO[int, int](&config{size: 10})
+
+	// Fill cache with items that stay in small queue (never accessed)
+	for i := range 15 {
+		cache.set(i, i, 0)
+	}
+
+	// At this point, items should be evicted from small queue
+	// because main is empty (items haven't been promoted)
+	remaining := 0
+	for i := range 15 {
+		if _, ok := cache.get(i); ok {
+			remaining++
+		}
+	}
+	t.Logf("Remaining items: %d (capacity: %d)", remaining, cache.capacity)
 }

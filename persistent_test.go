@@ -240,6 +240,70 @@ func (m *sequenceMockStore[K, V]) Close() error {
 	return nil
 }
 
+// injectingMockStore is a mock that can inject values into cache memory during Get.
+type injectingMockStore[K comparable, V any] struct {
+	*mockStore[K, V]
+
+	cache       *TieredCache[K, V] // Set after cache creation
+	injectKey   K
+	injectValue V
+	injectOnGet int // Inject on Nth Get call
+	getCalls    atomic.Int32
+}
+
+func newInjectingMockStore[K comparable, V any]() *injectingMockStore[K, V] {
+	return &injectingMockStore[K, V]{
+		mockStore: newMockStore[K, V](),
+	}
+}
+
+func (m *injectingMockStore[K, V]) Get(ctx context.Context, key K) (v V, expiry time.Time, found bool, err error) {
+	callNum := m.getCalls.Add(1)
+
+	// Inject value into cache memory at specified call
+	if m.cache != nil && m.injectOnGet > 0 && int(callNum) == m.injectOnGet {
+		m.cache.memory.set(m.injectKey, m.injectValue, 0)
+	}
+
+	return m.mockStore.Get(ctx, key)
+}
+
+func TestTieredCache_GetSet_SecondMemoryCheck(t *testing.T) {
+	// This test triggers the second memory check path in getSet (line 166-171)
+	// by injecting a value into memory during the first store.Get call.
+	store := newInjectingMockStore[string, int]()
+	store.injectKey = "key1"
+	store.injectValue = 77
+	store.injectOnGet = 1 // Inject during first Get
+
+	cache, err := NewTiered[string, int](store)
+	if err != nil {
+		t.Fatalf("NewTiered failed: %v", err)
+	}
+	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
+	store.cache = cache                  // Link store to cache for injection
+
+	ctx := context.Background()
+
+	loaderCalled := false
+	val, err := cache.GetSet(ctx, "key1", func(context.Context) (int, error) {
+		loaderCalled = true
+		return 42, nil
+	})
+	if err != nil {
+		t.Fatalf("GetSet failed: %v", err)
+	}
+
+	// Should return injected value from second memory check
+	if val != 77 {
+		t.Errorf("val = %d; want 77 (from second memory check)", val)
+	}
+
+	if loaderCalled {
+		t.Error("loader should not be called when second memory check finds value")
+	}
+}
+
 func TestTieredCache_Basic(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore[string, int]()
@@ -251,7 +315,7 @@ func TestTieredCache_Basic(t *testing.T) {
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
 	// Set should persist
-	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
+	if err := cache.Set(ctx, "key1", 42); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -385,7 +449,7 @@ func TestTieredCache_SetAsync(t *testing.T) {
 	defer func() { _ = cache.Close() }() //nolint:errcheck // Test cleanup
 
 	// SetAsync should not block but value should be available immediately
-	if err := cache.SetAsync(ctx, "key1", 42, 0); err != nil {
+	if err := cache.SetAsync(ctx, "key1", 42); err != nil {
 		t.Fatalf("SetAsync: %v", err)
 	}
 
@@ -442,7 +506,7 @@ func TestTieredCache_Errors(t *testing.T) {
 	// Set returns error when persistence fails (by design)
 	// Value is still in memory, but error is returned to caller
 	store.setFailSet(true)
-	if err := cache.Set(ctx, "key1", 42, 0); err == nil {
+	if err := cache.Set(ctx, "key1", 42); err == nil {
 		t.Error("Set should return error when persistence fails")
 	}
 
@@ -457,7 +521,7 @@ func TestTieredCache_Errors(t *testing.T) {
 
 	// SetAsync logs persistence errors but doesn't return them
 	store.setFailSet(true)
-	if err := cache.SetAsync(ctx, "key3", 300, 0); err != nil {
+	if err := cache.SetAsync(ctx, "key3", 300); err != nil {
 		t.Fatalf("SetAsync should not fail synchronously: %v", err)
 	}
 
@@ -476,7 +540,7 @@ func TestTieredCache_Errors(t *testing.T) {
 	// Get should work from memory even if persistence fails
 	store.setFailGet(true)
 	store.setFailSet(false)
-	if err := cache.Set(ctx, "key2", 100, 0); err != nil {
+	if err := cache.Set(ctx, "key2", 100); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	val, found, err = cache.Get(ctx, "key2")
@@ -500,7 +564,7 @@ func TestTieredCache_Delete_Errors(t *testing.T) {
 
 	// Store a value (with failSet = false)
 	store.setFailSet(false)
-	if err := cache.Set(ctx, "key1", 42, 0); err != nil {
+	if err := cache.Set(ctx, "key1", 42); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -615,7 +679,7 @@ func TestTieredCache_Flush(t *testing.T) {
 
 	// Add entries
 	for i := range 10 {
-		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*100, 0); err != nil {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*100); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -678,7 +742,7 @@ func TestTieredCache_StoreAccess(t *testing.T) {
 
 	// Add some entries
 	for i := range 5 {
-		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*10, 0); err != nil {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*10); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -766,7 +830,7 @@ func TestTieredCache_Set_VariadicTTL(t *testing.T) {
 	}
 
 	// Set with explicit short TTL
-	if err := cache.Set(ctx, "short-ttl", 2, 50*time.Millisecond); err != nil {
+	if err := cache.SetTTL(ctx, "short-ttl", 2, 50*time.Millisecond); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	_, found, err = cache.Get(ctx, "short-ttl")
@@ -814,7 +878,7 @@ func TestTieredCache_SetAsync_VariadicTTL(t *testing.T) {
 	}
 
 	// SetAsync with explicit TTL
-	if err := cache.SetAsync(ctx, "async-explicit", 2, 5*time.Minute); err != nil {
+	if err := cache.SetAsyncTTL(ctx, "async-explicit", 2, 5*time.Minute); err != nil {
 		t.Fatalf("SetAsync: %v", err)
 	}
 
@@ -872,7 +936,7 @@ func TestTieredCache_Concurrent(t *testing.T) {
 		go func(offset int) {
 			defer wg.Done()
 			for j := range 100 {
-				_ = cache.Set(ctx, offset*100+j, j, 0) //nolint:errcheck // Test concurrent access
+				_ = cache.Set(ctx, offset*100+j, j) //nolint:errcheck // Test concurrent access
 			}
 		}(i)
 	}
@@ -889,7 +953,7 @@ func TestTieredCache_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	// Cache should be functional after concurrent access
-	if err := cache.Set(ctx, 9999, 9999, 0); err != nil {
+	if err := cache.Set(ctx, 9999, 9999); err != nil {
 		t.Errorf("Set after concurrent access failed: %v", err)
 	}
 	val, found, err := cache.Get(ctx, 9999)
@@ -912,7 +976,7 @@ func TestTieredCache_Set_KeyValidationError(t *testing.T) {
 	ctx := context.Background()
 
 	// Set with invalid key should return error
-	err = cache.Set(ctx, "invalid/key", 42, 0)
+	err = cache.Set(ctx, "invalid/key", 42)
 	if err == nil {
 		t.Error("Set with invalid key should return error")
 	}
@@ -937,7 +1001,7 @@ func TestTieredCache_SetAsync_KeyValidationError(t *testing.T) {
 	ctx := context.Background()
 
 	// SetAsync with invalid key should return error synchronously
-	err = cache.SetAsync(ctx, "invalid/key", 42, 0)
+	err = cache.SetAsync(ctx, "invalid/key", 42)
 	if err == nil {
 		t.Error("SetAsync with invalid key should return error")
 	}
@@ -977,7 +1041,6 @@ func TestNewTiered_NilStore(t *testing.T) {
 func TestNew_InvalidSize(t *testing.T) {
 	// Size(0) should fallback to default
 	cache := New[string, int](Size(0))
-	defer cache.Close()
 
 	// Verify it works
 	cache.Set("key", 1)
@@ -987,7 +1050,6 @@ func TestNew_InvalidSize(t *testing.T) {
 
 	// Size(-10) should fallback to default
 	cache2 := New[string, int](Size(-10))
-	defer cache2.Close()
 	cache2.Set("key", 1)
 	if val, ok := cache2.Get("key"); !ok || val != 1 {
 		t.Error("Cache with Size(-10) should work (fallback to default)")
@@ -998,13 +1060,12 @@ func TestNew_TTL_Behavior(t *testing.T) {
 	// Test that TTL option is correctly applied as default
 	defaultTTL := 100 * time.Millisecond
 	cache := New[string, int](TTL(defaultTTL))
-	defer cache.Close()
 
 	// Set without explicit TTL -> uses default
 	cache.Set("default", 1)
 
 	// Set with explicit TTL -> overrides default
-	cache.Set("longer", 2, 1*time.Hour)
+	cache.SetTTL("longer", 2, 1*time.Hour)
 
 	// Wait for default to expire
 	time.Sleep(defaultTTL + 10*time.Millisecond)
@@ -1038,7 +1099,7 @@ func TestNewTiered_WithTTL_Behavior(t *testing.T) {
 	}
 
 	// Set with explicit TTL -> overrides default
-	if err := cache.Set(ctx, "longer", 2, 1*time.Hour); err != nil {
+	if err := cache.SetTTL(ctx, "longer", 2, 1*time.Hour); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -1240,7 +1301,7 @@ func TestTieredCache_GetSet_WithTTL(t *testing.T) {
 	}
 
 	// First call with short TTL
-	val, err := cache.GetSet(ctx, "key1", loader, 50*time.Millisecond)
+	val, err := cache.GetSetTTL(ctx, "key1", loader, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("GetSet error: %v", err)
 	}
@@ -1252,7 +1313,7 @@ func TestTieredCache_GetSet_WithTTL(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Second call - should call loader again (cache expired)
-	val, err = cache.GetSet(ctx, "key1", loader, 50*time.Millisecond)
+	val, err = cache.GetSetTTL(ctx, "key1", loader, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("GetSet error: %v", err)
 	}
@@ -1400,7 +1461,7 @@ func TestTieredCache_GetSet_CacheHitAfterFlight(t *testing.T) {
 	loaderCalls := int32(0)
 
 	// First goroutine starts slow loader
-	loader1 := func(ctx context.Context) (int, error) {
+	loader1 := func(context.Context) (int, error) { //nolint:unparam // test loader always succeeds
 		atomic.AddInt32(&loaderCalls, 1)
 		time.Sleep(100 * time.Millisecond)
 		return 42, nil
@@ -1455,7 +1516,9 @@ func TestTieredCache_GetSet_FoundInPersistenceDuringSingleflight(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-populate persistence (but not memory)
-	_ = store.Set(ctx, "key1", 77, time.Now().Add(time.Hour))
+	if err := store.Set(ctx, "key1", 77, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("store.Set failed: %v", err)
+	}
 
 	loaderCalls := 0
 	loader := func(ctx context.Context) (int, error) {
@@ -1479,6 +1542,7 @@ func TestTieredCache_GetSet_FoundInPersistenceDuringSingleflight(t *testing.T) {
 // flushFailingMockStore wraps mockStore and fails on Flush.
 type flushFailingMockStore[K comparable, V any] struct {
 	*mockStore[K, V]
+
 	failFlush bool
 }
 
@@ -1506,7 +1570,7 @@ func TestTieredCache_Flush_PersistenceError(t *testing.T) {
 
 	// Add some entries
 	for i := range 5 {
-		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*10, 0); err != nil {
+		if err := cache.Set(ctx, fmt.Sprintf("key%d", i), i*10); err != nil {
 			t.Fatalf("Set: %v", err)
 		}
 	}
@@ -1545,7 +1609,7 @@ func TestTieredCache_Delete_KeyValidationError(t *testing.T) {
 	ctx := context.Background()
 
 	// First add a valid key
-	if err := cache.Set(ctx, "validkey", 42, 0); err != nil {
+	if err := cache.Set(ctx, "validkey", 42); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -1593,7 +1657,7 @@ func TestTieredCache_Set_InvalidKey(t *testing.T) {
 	ctx := context.Background()
 
 	// Set with invalid key should return error before storing
-	err = cache.Set(ctx, "invalid/key", 42, 0)
+	err = cache.Set(ctx, "invalid/key", 42)
 	if err == nil {
 		t.Error("Set with invalid key should return error")
 	}
@@ -1618,7 +1682,7 @@ func TestTieredCache_SetAsync_InvalidKey(t *testing.T) {
 	ctx := context.Background()
 
 	// SetAsync with invalid key should return error synchronously
-	err = cache.SetAsync(ctx, "invalid/key", 42, 0)
+	err = cache.SetAsync(ctx, "invalid/key", 42)
 	if err == nil {
 		t.Error("SetAsync with invalid key should return error")
 	}
@@ -1653,10 +1717,12 @@ func TestTieredCache_GetSet_MemoryHitDuringSingleflight(t *testing.T) {
 		defer done.Done()
 		started.Done()
 
-		_, _ = cache.GetSet(ctx, key, func(ctx context.Context) (int, error) {
+		if _, err := cache.GetSet(ctx, key, func(context.Context) (int, error) {
 			time.Sleep(50 * time.Millisecond)
 			return 1, nil
-		})
+		}); err != nil {
+			t.Errorf("GetSet error: %v", err)
+		}
 	}()
 
 	started.Wait()
@@ -1665,7 +1731,9 @@ func TestTieredCache_GetSet_MemoryHitDuringSingleflight(t *testing.T) {
 	// Second goroutine: direct Set while first is in singleflight
 	go func() {
 		defer done.Done()
-		_ = cache.Set(ctx, key, 99)
+		if err := cache.Set(ctx, key, 99); err != nil {
+			t.Errorf("Set error: %v", err)
+		}
 	}()
 
 	done.Wait()
@@ -1722,7 +1790,9 @@ func TestTieredCache_GetSet_PersistenceHitDuringSingleflight(t *testing.T) {
 	// Second goroutine: directly set in persistence (bypassing cache)
 	go func() {
 		defer done.Done()
-		_ = store.Set(ctx, key, 99, time.Now().Add(time.Hour))
+		if err := store.Set(ctx, key, 99, time.Now().Add(time.Hour)); err != nil {
+			t.Errorf("store.Set error: %v", err)
+		}
 	}()
 
 	done.Wait()
@@ -1743,7 +1813,7 @@ func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
 	cache.memory.set("key1", 77, 0)
 
 	var loaderCalls atomic.Int32
-	loader := func(ctx context.Context) (int, error) {
+	loader := func(context.Context) (int, error) { //nolint:unparam // test loader always succeeds
 		loaderCalls.Add(1)
 		return 42, nil
 	}
@@ -1756,7 +1826,11 @@ func TestTieredCache_GetSet_SecondCheckMemory(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			val, _ := cache.GetSet(ctx, fmt.Sprintf("key%d", idx), loader)
+			val, err := cache.GetSet(ctx, fmt.Sprintf("key%d", idx), loader)
+			if err != nil {
+				t.Errorf("GetSet error: %v", err)
+				return
+			}
 			results[idx] = val
 		}(i)
 	}

@@ -189,9 +189,11 @@ func (s *Store[K, V]) Flush(ctx context.Context) (int, error) {
 		}
 
 		if len(scan.Elements) > 0 {
-			if c, err := s.client.Do(ctx, s.client.B().Del().Key(scan.Elements...).Build()).AsInt64(); err == nil {
-				n += int(c)
+			c, err := s.client.Do(ctx, s.client.B().Del().Key(scan.Elements...).Build()).AsInt64()
+			if err != nil {
+				return n, fmt.Errorf("delete keys: %w", err)
 			}
+			n += int(c)
 		}
 
 		cur = scan.Cursor
@@ -234,5 +236,5 @@ func (s *Store[K, V]) Len(ctx context.Context) (int, error) {
 // Close releases Valkey client resources.
 func (s *Store[K, V]) Close() error {
 	s.client.Close()
-	return nil
+	return nil // valkey client.Close() doesn't return an error
 }

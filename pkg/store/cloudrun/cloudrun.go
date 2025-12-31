@@ -21,7 +21,6 @@ type Store[K comparable, V any] interface {
 	Set(ctx context.Context, key K, value V, expiry time.Time) error
 	Delete(ctx context.Context, key K) error
 	Cleanup(ctx context.Context, maxAge time.Duration) (int, error)
-	Location(key K) string
 	Flush(ctx context.Context) (int, error)
 	Len(ctx context.Context) (int, error)
 	Close() error

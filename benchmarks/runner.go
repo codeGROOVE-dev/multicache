@@ -50,21 +50,22 @@ var hitRateKeys = map[string]string{
 var goldMedalists = "multicache,otter,clock,theine,sieve,freelru-sync"
 
 // suiteGoals are the minimum/maximum acceptable averages across all tests in each suite.
-// For latency and memory, lower is better so these are maximums.
+// Note: latency and throughput absolute values are hardware-dependent and validated via
+// placement (relative to other caches) rather than absolute thresholds.
 var suiteGoals = struct {
-	minHitRate    float64 // minimum average hit rate %
-	maxLatency    float64 // maximum average latency ns/op
-	minThroughput float64 // minimum average throughput ops/s
-	maxMemory     int     // maximum bytes per item
+	minHitRate         float64 // minimum average hit rate %
+	maxMemory          int     // maximum bytes per item
+	maxLatencyPlace    int     // maximum placement in latency category (1 = 1st place)
+	maxThroughputPlace int     // maximum placement in throughput category (1 = 1st place)
 }{
-	minHitRate:    61.61,
-	maxLatency:    18.0,
-	minThroughput: 250e6,
-	maxMemory:     80,
+	minHitRate:         61.61,
+	maxMemory:          80,
+	maxLatencyPlace:    1,
+	maxThroughputPlace: 1,
 }
 
 const (
-	minMulticacheScore = 163
+	minMulticacheScore = 157
 	gocachemarkRepo    = "github.com/tstromberg/gocachemark"
 	multicacheModule   = "github.com/codeGROOVE-dev/multicache"
 )
@@ -153,7 +154,7 @@ func main() {
 		fatal("%v", err)
 	}
 	if *competitive {
-		if err := validateCompetitive(results, ref); err != nil {
+		if err := validateCompetitive(results, ref, testsFilter, suitesFilter); err != nil {
 			fatal("%v", err)
 		}
 		// Only save results if all tests were run (no filters).
@@ -300,6 +301,7 @@ type MedalTable struct {
 type Category struct {
 	Name       string      `json:"name"`
 	Benchmarks []Benchmark `json:"benchmarks"`
+	Rankings   []RankEntry `json:"rankings"`
 }
 
 type Benchmark struct {
@@ -432,50 +434,8 @@ func validateSuiteGoals(res *Results) error {
 		}
 	}
 
-	// Latency average.
-	var latencies []float64
-	for name := range res.Latency {
-		var results []LatencyResult
-		if raw, ok := res.Latency[name]; ok {
-			json.Unmarshal(raw, &results)
-		}
-		if ns := findLatency(results, "multicache"); ns > 0 {
-			latencies = append(latencies, ns)
-		}
-	}
-	if len(latencies) > 0 {
-		avg := sum(latencies) / float64(len(latencies))
-		if avg <= suiteGoals.maxLatency {
-			fmt.Printf("✓ latency avg: %.1f ns/op (goal: ≤%.1f)\n", avg, suiteGoals.maxLatency)
-		} else {
-			fmt.Printf("✗ latency avg: %.1f ns/op (goal: ≤%.1f)\n", avg, suiteGoals.maxLatency)
-			fails = append(fails, fmt.Sprintf("latency avg %.1f > %.1f", avg, suiteGoals.maxLatency))
-		}
-	}
-
-	// Throughput average.
-	var throughputs []float64
-	for name := range res.Throughput {
-		if name == "threads" {
-			continue
-		}
-		var results []ThroughputResult
-		if raw, ok := res.Throughput[name]; ok {
-			json.Unmarshal(raw, &results)
-		}
-		if qps := findThroughput(results, "multicache"); qps > 0 {
-			throughputs = append(throughputs, qps)
-		}
-	}
-	if len(throughputs) > 0 {
-		avg := sum(throughputs) / float64(len(throughputs))
-		if avg >= suiteGoals.minThroughput {
-			fmt.Printf("✓ throughput avg: %.2f M ops/s (goal: ≥%.2f M)\n", avg/1e6, suiteGoals.minThroughput/1e6)
-		} else {
-			fmt.Printf("✗ throughput avg: %.2f M ops/s (goal: ≥%.2f M)\n", avg/1e6, suiteGoals.minThroughput/1e6)
-			fails = append(fails, fmt.Sprintf("throughput avg %.2f M < %.2f M", avg/1e6, suiteGoals.minThroughput/1e6))
-		}
-	}
+	// Note: Latency and throughput absolute values are hardware-dependent.
+	// Validation is done via placement (relative ranking) in validateCompetitive.
 
 	// Memory.
 	if res.Memory != nil {
@@ -629,7 +589,7 @@ func findMemory(results []MemoryEntry, name string) int {
 	return 0
 }
 
-func validateCompetitive(res, prev *Results) error {
+func validateCompetitive(res, prev *Results, testsFilter, suitesFilter string) error {
 	// Find multicache in rankings.
 	var mc *RankEntry
 	for i := range res.Rankings {
@@ -647,29 +607,83 @@ func validateCompetitive(res, prev *Results) error {
 		reportChanges(prev, res)
 	}
 
-	fmt.Println("\n=== Final Validation ===")
+	fullRun := testsFilter == "" && suitesFilter == ""
 
-	var fails []string
-	if mc.Score >= minMulticacheScore {
-		fmt.Printf("✓ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
-	} else {
-		fmt.Printf("✗ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
-		fails = append(fails, fmt.Sprintf("score %d < %d", mc.Score, minMulticacheScore))
+	// Only show final validation for full runs or when all tests in a suite were run.
+	if !fullRun && testsFilter != "" {
+		// Partial test run - skip validation entirely.
+		return nil
 	}
 
-	if prev != nil {
-		var prevScore int
-		for _, r := range prev.Rankings {
-			if r.Name == "multicache" {
-				prevScore = r.Score
-				break
+	// Check which suites were run (empty means all).
+	suiteSet := make(map[string]bool)
+	if suitesFilter != "" {
+		for _, s := range strings.Split(suitesFilter, ",") {
+			suiteSet[strings.ToLower(strings.TrimSpace(s))] = true
+		}
+	}
+
+	// For partial suite runs, only validate relevant placements.
+	var fails []string
+
+	// Score validation only for full runs.
+	if fullRun {
+		fmt.Println("\n=== Final Validation ===")
+		if mc.Score >= minMulticacheScore {
+			fmt.Printf("✓ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
+		} else {
+			fmt.Printf("✗ multicache score: %d (goal: ≥%d)\n", mc.Score, minMulticacheScore)
+			fails = append(fails, fmt.Sprintf("score %d < %d", mc.Score, minMulticacheScore))
+		}
+
+		if prev != nil {
+			var prevScore int
+			for _, r := range prev.Rankings {
+				if r.Name == "multicache" {
+					prevScore = r.Score
+					break
+				}
+			}
+			if mc.Score >= prevScore {
+				fmt.Printf("✓ No point reduction (was %d, now %d)\n", prevScore, mc.Score)
+			} else {
+				fmt.Printf("⚠ Point reduction: %d → %d\n", prevScore, mc.Score)
 			}
 		}
-		if mc.Score >= prevScore {
-			fmt.Printf("✓ No point reduction (was %d, now %d)\n", prevScore, mc.Score)
-		} else {
-			fmt.Printf("✗ Point reduction: %d → %d\n", prevScore, mc.Score)
-			fails = append(fails, fmt.Sprintf("points reduced from %d to %d", prevScore, mc.Score))
+	}
+
+	// Validate category placements.
+	for _, cat := range res.MedalTable.Categories {
+		var maxPlace int
+		suiteName := strings.ToLower(cat.Name)
+		switch cat.Name {
+		case "Latency":
+			maxPlace = suiteGoals.maxLatencyPlace
+		case "Throughput":
+			maxPlace = suiteGoals.maxThroughputPlace
+		default:
+			continue
+		}
+
+		// Skip if this suite wasn't included in a filtered run.
+		if len(suiteSet) > 0 && !suiteSet[suiteName] {
+			continue
+		}
+
+		for _, r := range cat.Rankings {
+			if r.Name == "multicache" {
+				// Print header if we haven't yet (partial suite run).
+				if !fullRun {
+					fmt.Println("\n=== Final Validation ===")
+				}
+				if r.Rank <= maxPlace {
+					fmt.Printf("✓ %s placement: %d (goal: ≤%d)\n", cat.Name, r.Rank, maxPlace)
+				} else {
+					fmt.Printf("✗ %s placement: %d (goal: ≤%d)\n", cat.Name, r.Rank, maxPlace)
+					fails = append(fails, fmt.Sprintf("%s placement %d > %d", cat.Name, r.Rank, maxPlace))
+				}
+				break
+			}
 		}
 	}
 

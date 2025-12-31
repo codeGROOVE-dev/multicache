@@ -116,7 +116,6 @@ func (s *Store[K, V]) keyToFilename(key K) string {
 }
 
 // Location returns the full file path where a key is stored.
-// Implements the Store interface Location() method.
 func (s *Store[K, V]) Location(key K) string {
 	return filepath.Join(s.Dir, s.keyToFilename(key))
 }
