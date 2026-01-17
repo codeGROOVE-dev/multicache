@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"time"
 
@@ -229,6 +230,33 @@ func (c *TieredCache[K, V]) Flush(ctx context.Context) (int, error) {
 // Len returns the memory cache size. Use Store.Len for persistence count.
 func (c *TieredCache[K, V]) Len() int {
 	return c.memory.len()
+}
+
+// Range returns an iterator over all non-expired key-value pairs in memory.
+// Does not iterate the persistence layer.
+// Iteration order is undefined. Safe for concurrent use.
+// Changes during iteration may or may not be reflected.
+func (c *TieredCache[K, V]) Range() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		//nolint:gosec // G115: Unix seconds fit in uint32 until year 2106
+		now := uint32(time.Now().Unix())
+		c.memory.entries.Range(func(key K, e *entry[K, V]) bool {
+			// Skip expired entries.
+			expiry := e.expirySec.Load()
+			if expiry != 0 && expiry < now {
+				return true
+			}
+
+			// Load value with seqlock.
+			v, ok := e.loadValue()
+			if !ok {
+				return true
+			}
+
+			// Yield to caller.
+			return yield(key, v)
+		})
+	}
 }
 
 // Close releases store resources.

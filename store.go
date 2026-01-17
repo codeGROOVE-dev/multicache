@@ -2,6 +2,7 @@ package fido
 
 import (
 	"context"
+	"iter"
 	"time"
 )
 
@@ -15,4 +16,16 @@ type Store[K comparable, V any] interface {
 	Flush(ctx context.Context) (int, error)
 	Len(ctx context.Context) (int, error)
 	Close() error
+}
+
+// PrefixScanner is an optional interface for stores that support efficient prefix iteration.
+// Only meaningful for Store[string, V].
+type PrefixScanner[V any] interface {
+	// Keys returns an iterator over keys matching prefix.
+	// Efficient: only lists keys, does not load values from storage.
+	Keys(ctx context.Context, prefix string) iter.Seq[string]
+
+	// Range returns an iterator over key-value pairs matching prefix.
+	// More expensive than Keys: loads and decodes values from storage.
+	Range(ctx context.Context, prefix string) iter.Seq2[string, V]
 }

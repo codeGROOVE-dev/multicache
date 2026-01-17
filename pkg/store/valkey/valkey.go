@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
+	"strings"
 	"time"
 
 	"github.com/codeGROOVE-dev/fido/pkg/store/compress"
@@ -237,4 +239,107 @@ func (s *Store[K, V]) Len(ctx context.Context) (int, error) {
 func (s *Store[K, V]) Close() error {
 	s.client.Close()
 	return nil // valkey client.Close() doesn't return an error
+}
+
+// Keys returns an iterator over keys matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+// Uses SCAN with pattern matching for efficiency.
+func (s *Store[K, V]) Keys(ctx context.Context, prefix string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		pat := s.prefix + prefix + "*" + s.ext
+		var cur uint64
+
+		for {
+			// Check context cancellation.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			scan, err := s.client.Do(ctx, s.client.B().Scan().Cursor(cur).Match(pat).Count(100).Build()).AsScanEntry()
+			if err != nil {
+				return
+			}
+
+			for _, rkey := range scan.Elements {
+				// Extract original key (remove prefix and extension).
+				name := strings.TrimPrefix(rkey, s.prefix)
+				if s.ext != "" {
+					name = strings.TrimSuffix(name, s.ext)
+				}
+
+				// Yield key.
+				if !yield(name) {
+					return
+				}
+			}
+
+			cur = scan.Cursor
+			if cur == 0 {
+				break
+			}
+		}
+	}
+}
+
+// Range returns an iterator over key-value pairs matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+// Uses SCAN with pattern matching, then GET pipeline for values.
+func (s *Store[K, V]) Range(ctx context.Context, prefix string) iter.Seq2[string, V] {
+	return func(yield func(string, V) bool) {
+		pat := s.prefix + prefix + "*" + s.ext
+		var cur uint64
+
+		for {
+			// Check context cancellation.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			scan, err := s.client.Do(ctx, s.client.B().Scan().Cursor(cur).Match(pat).Count(100).Build()).AsScanEntry()
+			if err != nil {
+				return
+			}
+
+			// Fetch values for all keys in this batch.
+			for _, rkey := range scan.Elements {
+				b, err := s.client.Do(ctx, s.client.B().Get().Key(rkey).Build()).AsBytes()
+				if err != nil {
+					if valkey.IsValkeyNil(err) {
+						continue
+					}
+					continue
+				}
+
+				data, err := s.compressor.Decode(b)
+				if err != nil {
+					continue
+				}
+
+				var v V
+				if err := json.Unmarshal(data, &v); err != nil {
+					continue
+				}
+
+				// Extract original key.
+				name := strings.TrimPrefix(rkey, s.prefix)
+				if s.ext != "" {
+					name = strings.TrimSuffix(name, s.ext)
+				}
+
+				// Yield key and value.
+				if !yield(name, v) {
+					return
+				}
+			}
+
+			cur = scan.Cursor
+			if cur == 0 {
+				break
+			}
+		}
+	}
 }

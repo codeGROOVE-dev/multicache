@@ -797,3 +797,298 @@ func TestCache_Fetch_DoubleCheckPath(t *testing.T) {
 		t.Log("Could not reliably hit double-check path (race dependent)")
 	}
 }
+
+func TestCache_Range_Empty(t *testing.T) {
+	cache := New[string, int]()
+
+	count := 0
+	for range cache.Range() {
+		count++
+	}
+
+	if count != 0 {
+		t.Errorf("Range on empty cache yielded %d items; want 0", count)
+	}
+}
+
+func TestCache_Range_Single(t *testing.T) {
+	cache := New[string, int]()
+	cache.Set("key1", 42)
+
+	count := 0
+	var gotKey string
+	var gotVal int
+
+	for k, v := range cache.Range() {
+		count++
+		gotKey = k
+		gotVal = v
+	}
+
+	if count != 1 {
+		t.Errorf("Range yielded %d items; want 1", count)
+	}
+	if gotKey != "key1" {
+		t.Errorf("Range key = %q; want %q", gotKey, "key1")
+	}
+	if gotVal != 42 {
+		t.Errorf("Range value = %d; want 42", gotVal)
+	}
+}
+
+func TestCache_Range_Multiple(t *testing.T) {
+	cache := New[string, int]()
+
+	// Add entries
+	expected := map[string]int{
+		"a": 1,
+		"b": 2,
+		"c": 3,
+	}
+
+	for k, v := range expected {
+		cache.Set(k, v)
+	}
+
+	// Collect via Range
+	got := make(map[string]int)
+	for k, v := range cache.Range() {
+		got[k] = v
+	}
+
+	// Verify all expected entries were yielded
+	if len(got) != len(expected) {
+		t.Errorf("Range yielded %d items; want %d", len(got), len(expected))
+	}
+
+	for k, want := range expected {
+		if got[k] != want {
+			t.Errorf("Range[%q] = %d; want %d", k, got[k], want)
+		}
+	}
+}
+
+func TestCache_Range_SkipsExpired(t *testing.T) {
+	cache := New[string, int]()
+
+	// Set with short TTL (1 second granularity)
+	cache.SetTTL("expired", 1, 1*time.Second)
+	cache.Set("valid", 2) // no TTL
+
+	// Wait for first key to expire
+	time.Sleep(2 * time.Second)
+
+	// Range should only yield valid entry
+	count := 0
+	for k, v := range cache.Range() {
+		count++
+		if k == "expired" {
+			t.Error("Range yielded expired entry")
+		}
+		if k == "valid" && v != 2 {
+			t.Errorf("Range[valid] = %d; want 2", v)
+		}
+	}
+
+	if count != 1 {
+		t.Errorf("Range yielded %d items; want 1 (expired should be skipped)", count)
+	}
+}
+
+func TestCache_Range_EarlyTermination(t *testing.T) {
+	cache := New[int, int]()
+
+	// Add 100 entries
+	for i := range 100 {
+		cache.Set(i, i*10)
+	}
+
+	// Stop after 10 entries
+	count := 0
+	for range cache.Range() {
+		count++
+		if count >= 10 {
+			break
+		}
+	}
+
+	if count != 10 {
+		t.Errorf("Range with early break yielded %d items; want 10", count)
+	}
+}
+
+func TestCache_Range_KeysOnly(t *testing.T) {
+	cache := New[string, int]()
+
+	expected := []string{"a", "b", "c"}
+	for _, k := range expected {
+		cache.Set(k, 999) // value doesn't matter
+	}
+
+	// Iterate keys only (ignore value)
+	got := make(map[string]bool)
+	for k := range cache.Range() {
+		got[k] = true
+	}
+
+	if len(got) != len(expected) {
+		t.Errorf("Range keys-only yielded %d items; want %d", len(got), len(expected))
+	}
+
+	for _, k := range expected {
+		if !got[k] {
+			t.Errorf("Range keys-only missing key %q", k)
+		}
+	}
+}
+
+func TestCache_Range_ConcurrentModification(t *testing.T) {
+	cache := New[int, int](Size(1000))
+
+	// Populate cache
+	for i := range 100 {
+		cache.Set(i, i)
+	}
+
+	var wg sync.WaitGroup
+
+	// Start iteration
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		count := 0
+		for range cache.Range() {
+			count++
+			time.Sleep(time.Millisecond) // slow iteration
+		}
+	}()
+
+	// Concurrent modifications during iteration
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 100; i < 200; i++ {
+			cache.Set(i, i)
+			time.Sleep(500 * time.Microsecond)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range 50 {
+			cache.Delete(i)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+	// Should complete without panic
+}
+
+func TestCache_Range_IntKeys(t *testing.T) {
+	cache := New[int, string]()
+
+	expected := map[int]string{
+		1: "one",
+		2: "two",
+		3: "three",
+	}
+
+	for k, v := range expected {
+		cache.Set(k, v)
+	}
+
+	got := make(map[int]string)
+	for k, v := range cache.Range() {
+		got[k] = v
+	}
+
+	if len(got) != len(expected) {
+		t.Errorf("Range yielded %d items; want %d", len(got), len(expected))
+	}
+
+	for k, want := range expected {
+		if got[k] != want {
+			t.Errorf("Range[%d] = %q; want %q", k, got[k], want)
+		}
+	}
+}
+
+func TestCache_Range_LargeDataset(t *testing.T) {
+	cache := New[int, int](Size(100000))
+
+	// Add 100k entries
+	for i := range 100000 {
+		cache.Set(i, i*2)
+	}
+
+	// Iterate all
+	count := 0
+	for k, v := range cache.Range() {
+		count++
+		if v != k*2 {
+			t.Errorf("Range[%d] = %d; want %d", k, v, k*2)
+		}
+	}
+
+	// Should yield all 100k entries
+	if count != 100000 {
+		t.Errorf("Range yielded %d items; want 100000", count)
+	}
+}
+
+func BenchmarkCache_Range_100k(b *testing.B) {
+	cache := New[int, int](Size(100000))
+
+	// Populate with 100k entries
+	for i := range 100000 {
+		cache.Set(i, i)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		for range cache.Range() {
+			count++
+		}
+	}
+}
+
+func BenchmarkCache_Range_100k_EarlyTermination(b *testing.B) {
+	cache := New[int, int](Size(100000))
+
+	// Populate with 100k entries
+	for i := range 100000 {
+		cache.Set(i, i)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		for range cache.Range() {
+			count++
+			if count >= 100 {
+				break
+			}
+		}
+	}
+}
+
+func BenchmarkCache_Range_KeysOnly(b *testing.B) {
+	cache := New[int, int](Size(100000))
+
+	// Populate with 100k entries
+	for i := range 100000 {
+		cache.Set(i, i)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		count := 0
+		for k := range cache.Range() {
+			_ = k
+			count++
+		}
+	}
+}
