@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
@@ -367,4 +368,76 @@ func (s *Store[K, V]) Len(ctx context.Context) (int, error) {
 func (*Store[K, V]) Close() error {
 	// No resources to clean up for file-based persistence
 	return nil
+}
+
+// Keys returns an iterator over keys matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+func (s *Store[K, V]) Keys(ctx context.Context, prefix string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for k := range s.Range(ctx, prefix) {
+			if !yield(k) {
+				return
+			}
+		}
+	}
+}
+
+// Range returns an iterator over key-value pairs matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+// Walks all subdirectories and reads files to extract keys and values.
+func (s *Store[K, V]) Range(ctx context.Context, prefix string) iter.Seq2[string, V] {
+	return func(yield func(string, V) bool) {
+		//nolint:errcheck // Walk errors are benign - we skip problematic files
+		_ = filepath.Walk(s.Dir, func(path string, fi os.FileInfo, err error) error {
+			// Check context cancellation.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			//nolint:nilerr // Skip files with errors
+			if err != nil || fi.IsDir() || !s.isCacheFile(fi.Name()) {
+				return nil
+			}
+
+			// Read file to get original key and value from Entry.
+			b, err := os.ReadFile(path)
+			//nolint:nilerr // Skip unreadable files
+			if err != nil {
+				return nil
+			}
+
+			data, err := s.compressor.Decode(b)
+			//nolint:nilerr // Skip corrupted files
+			if err != nil {
+				return nil
+			}
+
+			var e Entry[K, V]
+			//nolint:nilerr // Skip malformed files
+			if err := json.Unmarshal(data, &e); err != nil {
+				return nil
+			}
+
+			// Skip expired entries.
+			if !e.Expiry.IsZero() && time.Now().After(e.Expiry) {
+				return nil
+			}
+
+			// Extract key as string (works when K is string).
+			name := fmt.Sprintf("%v", e.Key)
+
+			// Check prefix match.
+			if !strings.HasPrefix(name, prefix) {
+				return nil
+			}
+
+			// Yield key and value.
+			if !yield(name, e.Value) {
+				return filepath.SkipAll
+			}
+			return nil
+		})
+	}
 }

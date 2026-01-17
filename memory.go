@@ -2,6 +2,7 @@
 package fido
 
 import (
+	"iter"
 	"sync"
 	"time"
 
@@ -136,6 +137,32 @@ func (c *Cache[K, V]) Len() int {
 // Flush removes all entries. Returns count removed.
 func (c *Cache[K, V]) Flush() int {
 	return c.memory.flush()
+}
+
+// Range returns an iterator over all non-expired key-value pairs.
+// Iteration order is undefined. Safe for concurrent use.
+// Changes during iteration may or may not be reflected.
+func (c *Cache[K, V]) Range() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		//nolint:gosec // G115: Unix seconds fit in uint32 until year 2106
+		now := uint32(time.Now().Unix())
+		c.memory.entries.Range(func(key K, e *entry[K, V]) bool {
+			// Skip expired entries.
+			expiry := e.expirySec.Load()
+			if expiry != 0 && expiry < now {
+				return true
+			}
+
+			// Load value with seqlock.
+			v, ok := e.loadValue()
+			if !ok {
+				return true
+			}
+
+			// Yield to caller.
+			return yield(key, v)
+		})
+	}
 }
 
 type config struct {

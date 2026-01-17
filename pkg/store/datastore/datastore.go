@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
+	"strings"
 	"time"
 
 	ds "github.com/codeGROOVE-dev/ds9/pkg/datastore"
@@ -215,4 +217,95 @@ func (s *Store[K, V]) Len(ctx context.Context) (int, error) {
 // Close releases Datastore client resources.
 func (s *Store[K, V]) Close() error {
 	return s.client.Close()
+}
+
+// Keys returns an iterator over keys matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+// Uses Datastore keys-only query for efficiency.
+func (s *Store[K, V]) Keys(ctx context.Context, prefix string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		// Construct key range for prefix scanning.
+		start := ds.NameKey(s.kind, prefix+s.ext, nil)
+		end := ds.NameKey(s.kind, prefix+"\xff"+s.ext, nil)
+
+		q := ds.NewQuery(s.kind).
+			Filter("__key__ >=", start).
+			Filter("__key__ <", end).
+			KeysOnly()
+
+		it := s.client.Run(ctx, q)
+		for {
+			key, err := it.Next(nil)
+			if err != nil {
+				return
+			}
+
+			// Extract original key from Datastore key name.
+			name := key.Name
+			if s.ext != "" {
+				name = strings.TrimSuffix(name, s.ext)
+			}
+
+			// Yield key.
+			if !yield(name) {
+				return
+			}
+		}
+	}
+}
+
+// Range returns an iterator over key-value pairs matching prefix.
+// Implements PrefixScanner[V] interface (only usable when K is string).
+// Uses Datastore full query to fetch entities.
+func (s *Store[K, V]) Range(ctx context.Context, prefix string) iter.Seq2[string, V] {
+	return func(yield func(string, V) bool) {
+		// Construct key range for prefix scanning.
+		start := ds.NameKey(s.kind, prefix+s.ext, nil)
+		end := ds.NameKey(s.kind, prefix+"\xff"+s.ext, nil)
+
+		q := ds.NewQuery(s.kind).
+			Filter("__key__ >=", start).
+			Filter("__key__ <", end)
+
+		it := s.client.Run(ctx, q)
+		for {
+			var e entry
+			key, err := it.Next(&e)
+			if err != nil {
+				return
+			}
+
+			// Skip expired entries.
+			if !e.Expiry.IsZero() && time.Now().After(e.Expiry) {
+				continue
+			}
+
+			// Extract original key from Datastore key name.
+			name := key.Name
+			if s.ext != "" {
+				name = strings.TrimSuffix(name, s.ext)
+			}
+
+			// Decode value.
+			b, err := base64.StdEncoding.DecodeString(e.Value)
+			if err != nil {
+				continue
+			}
+
+			data, err := s.compressor.Decode(b)
+			if err != nil {
+				continue
+			}
+
+			var v V
+			if err := json.Unmarshal(data, &v); err != nil {
+				continue
+			}
+
+			// Yield key and value.
+			if !yield(name, v) {
+				return
+			}
+		}
+	}
 }
